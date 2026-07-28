@@ -1,0 +1,58 @@
+=== QUESTION BANK PROJECT — MASTER CONTEXT ===
+
+Paste block này khi cần chuyển sang LLM khác (Cursor, Copilot, GPT).
+Dài <500 tokens.
+
+## What
+Web app cá nhân (Next.js 14 + Supabase + Gemini 2.5 Flash), self-host Vercel.
+Upload đề Word/PDF → AI phân loại độ khó (biết/hiểu/vận dụng) → trộn ra đề
+mới theo cấu hình → xuất Word/PDF.
+
+## Stack
+- Next.js 14 App Router, TypeScript strict
+- Supabase Postgres (500MB free) + Storage (1GB free)
+- Gemini 2.5 Flash (1500 req/ngày free)
+- mammoth (parse docx), docx npm (export Word), @react-pdf/renderer (PDF Phase 2)
+- Auth: password + JWT cookie qua middleware
+
+## 6 subproblems (chia theo computational nature)
+SP1 Parse       : file → HTML/text (mammoth cho docx; Gemini native cho PDF)
+SP2 Segment     : text → [{number, type, content}] theo range user khai báo
+SP3 Classify    : AI phân loại difficulty, batch 8/call, fallback "unclassified"
+SP4 Dedup       : normalize + SHA-256, DB unique index
+SP5 Sample      : constrained random Mulberry32 seeded (deterministic)
+SP6 Generate    : câu → Word/PDF, blank + with_answer
+
+## Hard constraints
+- Chi phí 0 VND/tháng
+- Vercel timeout ≤10s → chunk file, batch AI, throttle
+- Gemini ≤15 req/phút → p-limit(3)
+- Mọi AI call PHẢI wrap try/catch, fallback "unclassified"
+- Dedup ở DB level (unique index), KHÔNG check-then-insert
+- SP5 và export PHẢI deterministic
+
+## Non-goals (KHÔNG làm)
+- OCR PDF scan
+- Render công thức toán đẹp (LaTeX/MathType)
+- Multi-user, sharing, permission
+- Mobile app native
+- Chấm điểm tự luận tự động
+- Tích hợp LMS
+
+## 4 tables
+- chapters (id, name, subject)
+- source_files (id, chapter_id, file_hash UNIQUE, storage_path, structure JSONB, status)
+- questions (id, chapter_id, content, type, difficulty, options JSONB, tags TEXT[],
+  content_hash UNIQUE)
+- exams (id, name, config JSONB, question_ids UUID[])
+
+## Files quan trọng
+- SKILL.md (context always-on cho AI)
+- references/PROJECT_SPEC.md (spec đầy đủ với CT framework analysis)
+- references/prompt_library.md (prompt Gemini + case fail)
+- references/tech_constraints.md (free tier limits + workaround)
+- lib/{parse,gemini,dedup,sample,export}/ (code SP1-6)
+- app/api/upload/route.ts (pipeline SP1→SP4)
+- db/schema.sql (migration Postgres)
+
+=== END CONTEXT ===

@@ -1,0 +1,60 @@
+{
+  "_comment": "Ví dụ ExamConfig để test SP5 (Constrained Random Sampling). Copy cấu trúc khi build test hoặc gọi POST /api/exam/preview.",
+
+  "example_1_de_giua_ky": {
+    "chapter_ids": [
+      "11111111-1111-1111-1111-111111111111",
+      "22222222-2222-2222-2222-222222222222"
+    ],
+    "total_questions": 30,
+    "by_difficulty": {
+      "biet": 10,
+      "hieu": 15,
+      "van_dung": 5
+    },
+    "by_type": {
+      "multiple_choice": 20,
+      "short_answer": 10
+    },
+    "random_seed": "abc12345"
+  },
+
+  "example_2_de_on_tap_ngan": {
+    "chapter_ids": ["33333333-3333-3333-3333-333333333333"],
+    "total_questions": 10,
+    "by_difficulty": {
+      "biet": 4,
+      "hieu": 4,
+      "van_dung": 2
+    },
+    "by_type": {
+      "multiple_choice": 10
+    },
+    "random_seed": "quick01"
+  },
+
+  "example_3_de_kho_theo_tag": {
+    "chapter_ids": ["44444444-4444-4444-4444-444444444444"],
+    "total_questions": 20,
+    "by_difficulty": {
+      "hieu": 8,
+      "van_dung": 12
+    },
+    "by_type": {
+      "multiple_choice": 15,
+      "essay": 5
+    },
+    "tags": ["hàm số", "bài toán thực tế"],
+    "random_seed": "hard999"
+  },
+
+  "example_source_files_structure": {
+    "_comment": "Cấu trúc field 'structure' của bảng source_files (feature #2). User khai báo khi upload để SP2 dùng.",
+    "example": [
+      { "from": 1, "to": 15, "type": "multiple_choice" },
+      { "from": 16, "to": 20, "type": "true_false" },
+      { "from": 21, "to": 25, "type": "short_answer" },
+      { "from": 26, "to": 30, "type": "essay" }
+    ]
+  }
+}
