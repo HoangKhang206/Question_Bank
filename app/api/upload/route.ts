@@ -3,7 +3,7 @@
 
 import { NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase/server';
-import { parseDocx, htmlToText } from '@/lib/parse/docx';
+import { parseDocx } from '@/lib/parse/docx';
 import { parsePdf } from '@/lib/parse/pdf';
 import { segmentQuestions } from '@/lib/parse/segment';
 import { extractAnswersAuto } from '@/lib/parse/answer-detect';
@@ -34,6 +34,9 @@ export async function POST(req: Request) {
 
     if (!file || !chapterId) {
       return NextResponse.json({ error: 'Thiếu field' }, { status: 400 });
+    }
+    if (file.size > 4 * 1024 * 1024) {
+      return NextResponse.json({ error: 'File không được vượt quá 4 MB' }, { status: 413 });
     }
 
     const buffer = Buffer.from(await file.arrayBuffer());
@@ -86,8 +89,7 @@ export async function POST(req: Request) {
     let text: string;
     let html = '';
     if (file.name.endsWith('.docx')) {
-      html = await parseDocx(buffer);
-      text = htmlToText(html);
+      ({ html, text } = await parseDocx(buffer));
     } else if (file.name.endsWith('.pdf')) {
       text = await parsePdf(buffer);
     } else {
@@ -125,8 +127,8 @@ export async function POST(req: Request) {
       classifyOpts.autoAnswer = false;
     }
 
-    // SP2: Segment
-    const rawQuestions = segmentQuestions(text, structure, precomputedAnswers);
+    // SP2: Segment (truyền html để gán html_content cho câu có ảnh)
+    const rawQuestions = segmentQuestions(text, structure, precomputedAnswers, html || undefined);
     console.log('[UPLOAD] SP2 rawQuestions.length:', rawQuestions.length);
 
     // SP3: Classify (đã có fallback bên trong)
@@ -147,7 +149,7 @@ export async function POST(req: Request) {
         question_number: q.number,
         type: q.type,
         difficulty: q.difficulty,
-        content: q.raw_content,
+        content: q.html_content ?? q.raw_content,
         options: q.options ?? null,
         answer: q.answer ?? null,
         explanation: q.explanation ?? null,

@@ -85,7 +85,7 @@ export function extractAnswers(text: string): Map<number, string> {
   }
 
   // Format 4: true_false "a) Đúng/Sai, b) Đúng/Sai..." từ Lời giải
-  for (const lg of text.matchAll(/(?:Lời giải|Hướng dẫn)[:\s]*\n([\s\S]{1,800}?)(?=\nCâu\s+\d+|$)/gi)) {
+  for (const lg of text.matchAll(/(?:Lời giải|Hướng dẫn)\b[^\n]*\n([\s\S]{1,800}?)(?=\nCâu\s+\d+|$)/gi)) {
     const prevCau = cauPositions.filter((m) => m.index! < lg.index!).at(-1);
     if (!prevCau) continue;
     const num = parseInt(prevCau[1], 10);
@@ -238,7 +238,7 @@ function extractExplanationsFromBlock(text: string, offset: number): Map<number,
     const end = i + 1 < matches.length ? matches[i + 1].index! : text.length;
     const raw = text.slice(start, end).trim();
     // Strip nhãn "Lời giải:" / "Giải:" nếu có
-    const expl = raw.replace(/^(?:Lời giải|Hướng dẫn|Giải)\s*[:\-–]?\s*/iu, '').trim();
+    const expl = raw.replace(/^(?:Lời giải|Hướng dẫn(?: giải)?|Giải)\s*[:\-–]?\s*/iu, '').trim();
     if (expl) map.set(globalNum, expl);
   }
 
@@ -276,12 +276,91 @@ function extractExplanationMap(
   return map;
 }
 
+// ─── HTML slice map (cho ảnh inline) ─────────────────────────────────────────
+
+function blockToText(block: string): string {
+  return block
+    .replace(/<img[^>]*>/gi, '')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * Tách HTML thành Map<localQuestionNumber, stemHtml>.
+ * stemHtml = phần câu hỏi trước options A/B/C/D, bao gồm ảnh + bảng.
+ * Chỉ trả về entry cho câu nào thực sự có <img> hoặc <table>.
+ * Strip "Câu N." ở đầu để tránh hiện 2 lần khi UI thêm prefix.
+ */
+export function buildHtmlSliceMap(html: string): Map<number, string> {
+  if (!html.includes('<img') && !html.includes('<table')) return new Map();
+
+  const map = new Map<number, string>();
+  const blockRe = /<p(?:\s[^>]*)?>[\s\S]*?<\/p>|<img(?:\s[^>]*)?\/?>|<table[\s\S]*?<\/table>|<(?:ul|ol)[\s\S]*?<\/(?:ul|ol)>/gi;
+
+  const blocks: string[] = [];
+  let lastIdx = 0;
+  for (const m of Array.from(html.matchAll(blockRe))) {
+    const before = html.slice(lastIdx, m.index!).trim();
+    if (before) blocks.push(before);
+    blocks.push(m[0]);
+    lastIdx = m.index! + m[0].length;
+  }
+  const tail = html.slice(lastIdx).trim();
+  if (tail) blocks.push(tail);
+
+  // Group blocks theo số câu
+  const groups = new Map<number, string[]>();
+  let currentNum: number | null = null;
+
+  for (const block of blocks) {
+    const text = blockToText(block);
+    const m = text.match(/^(?:Câu\s+)?(\d+)\s*[.):]/);
+    if (m) {
+      currentNum = parseInt(m[1], 10);
+      if (!groups.has(currentNum)) groups.set(currentNum, []);
+      groups.get(currentNum)!.push(block);
+    } else if (currentNum !== null) {
+      groups.get(currentNum)!.push(block);
+    }
+  }
+
+  // Mỗi câu: lấy stem (dừng trước A./B./C./D. options và lời giải)
+  for (const [num, questionBlocks] of groups) {
+    const stemBlocks: string[] = [];
+    for (const block of questionBlocks) {
+      const text = blockToText(block);
+      if (/^[ABCDabcd][.)]\s/.test(text)) break;
+      if (/^(?:Lời giải|Hướng dẫn|Giải)\b/iu.test(text)) break;
+      stemBlocks.push(block);
+    }
+
+    const stemHtml = stemBlocks.join('');
+    if (!stemHtml.includes('<img') && !stemHtml.includes('<table')) continue;
+
+    // Strip "Câu N." / "N." ở đầu paragraph đầu tiên
+    const cleaned = stemHtml.replace(
+      /(<p(?:[^>]*)?>)\s*(?:Câu\s+)?\d+\s*[.):]\s*/u,
+      '$1'
+    );
+    map.set(num, cleaned);
+  }
+
+  return map;
+}
+
 // ─── Main entry ───────────────────────────────────────────────────────────────
 
 export function segmentQuestions(
   text: string,
   ranges: QuestionRange[],
-  precomputedAnswers?: Map<number, string>
+  precomputedAnswers?: Map<number, string>,
+  htmlSource?: string
 ): RawQuestion[] {
   const boundary = findContentBoundary(text);
   const phanSections = detectPhans(text, boundary);
@@ -296,6 +375,18 @@ export function segmentQuestions(
 
     if (questions.length === 0) {
       throw new Error('[SP2] Không tìm thấy marker câu hỏi nào trong file');
+    }
+
+    // Gán html_content = stem HTML (bảng + ảnh giữ nguyên vị trí)
+    if (htmlSource) {
+      const htmlMap = buildHtmlSliceMap(htmlSource);
+      if (htmlMap.size > 0) {
+        for (const q of questions) {
+          const stemHtml = htmlMap.get(q.number);
+          if (stemHtml) q.html_content = stemHtml;
+        }
+        console.log(`[SP2] html_content (ảnh/bảng) gán cho ${questions.filter((q) => q.html_content).length} câu`);
+      }
     }
 
     const foundAnswers = questions.filter((q) => q.answer).length;

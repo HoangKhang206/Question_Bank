@@ -434,7 +434,10 @@ function QuestionItem({
             </div>
             <p className="text-sm text-gray-900">
               <span className="font-semibold text-gray-500 mr-1">Câu {idx}.</span>
-              {q.content.slice(0, 200)}{q.content.length > 200 && '...'}
+              {(q.content.trimStart().startsWith('<')
+                ? q.content.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
+                : q.content
+              ).slice(0, 200)}
             </p>
             <AnswerDisplay q={q} />
           </div>

@@ -1,6 +1,6 @@
 'use client';
 
-import { Suspense, useState, useRef, useCallback } from 'react';
+import { Suspense, useState, useRef, useCallback, useEffect } from 'react';
 import { useSearchParams } from 'next/navigation';
 import type { QuestionRange, QuestionType } from '@/lib/types';
 
@@ -11,6 +11,40 @@ interface UploadResult {
   unclassified: number;
 }
 
+interface ChunkProgress {
+  current: number;  // chunks completed so far
+  total: number;
+  inserted: number;
+  skipped_duplicate: number;
+  unclassified: number;
+  eta: number | null; // seconds remaining
+}
+
+interface ChunkedCtx {
+  chunks: string[];
+  source_file_id: string;
+  precomputed_answers: Record<string, string>;
+}
+
+const CHUNK_SIZE = 40;
+const LARGE_FILE_THRESHOLD = 2 * 1024 * 1024; // 2MB
+const QUESTION_MARKER_RE = /^(?:Câu\s+)?(\d+)\s*[.):]/gm;
+
+function splitText(text: string): string[] {
+  const indices: number[] = [];
+  for (const m of text.matchAll(QUESTION_MARKER_RE)) {
+    indices.push(m.index!);
+  }
+  if (indices.length === 0) return [text];
+  const chunks: string[] = [];
+  for (let i = 0; i < indices.length; i += CHUNK_SIZE) {
+    const start = indices[i];
+    const end = indices[i + CHUNK_SIZE] ?? text.length;
+    chunks.push(text.slice(start, end));
+  }
+  return chunks;
+}
+
 function UploadInner() {
   const params = useSearchParams();
   const chapterId = params.get('chapter_id') ?? '';
@@ -18,25 +52,48 @@ function UploadInner() {
   const [file, setFile] = useState<File | null>(null);
   const [dragging, setDragging] = useState(false);
   const [ranges, setRanges] = useState<QuestionRange[]>([
-    { from: 1, to: 10, type: 'multiple_choice' }
+    { from: 1, to: 10, type: 'multiple_choice' },
   ]);
   const [autoType, setAutoType] = useState(false);
   const [autoAnswer, setAutoAnswer] = useState(true);
+  const [chunkedMode, setChunkedMode] = useState(false);
   const [result, setResult] = useState<UploadResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState('');
+  const [chunkProgress, setChunkProgress] = useState<ChunkProgress | null>(null);
+  const [failedChunk, setFailedChunk] = useState<number | null>(null);
+
   const inputRef = useRef<HTMLInputElement>(null);
+  const cancelRef = useRef(false);
+  const chunkedCtxRef = useRef<ChunkedCtx | null>(null);
+  const sessionStartRef = useRef<number>(0);
+  const accRef = useRef({ inserted: 0, skipped: 0, unclassified: 0 });
 
   const ACCEPT = '.docx,.pdf';
+
+  // Warn before closing tab while uploading
+  useEffect(() => {
+    if (!loading) return;
+    const handler = (e: BeforeUnloadEvent) => { e.preventDefault(); };
+    window.addEventListener('beforeunload', handler);
+    return () => window.removeEventListener('beforeunload', handler);
+  }, [loading]);
 
   function pickFile(f: File) {
     if (!f.name.endsWith('.docx') && !f.name.endsWith('.pdf')) {
       setErr('Chỉ hỗ trợ file .docx hoặc .pdf');
       return;
     }
+    if (f.size > 4 * 1024 * 1024) {
+      setErr('File không được vượt quá 4 MB');
+      return;
+    }
     setFile(f);
     setErr('');
     setResult(null);
+    setChunkProgress(null);
+    setFailedChunk(null);
+    if (f.size >= LARGE_FILE_THRESHOLD) setChunkedMode(true);
   }
 
   const onDrop = useCallback((e: React.DragEvent) => {
@@ -51,7 +108,156 @@ function UploadInner() {
     setDragging(true);
   }, []);
 
-  async function submit(overwrite = false) {
+  // ─── Chunked upload helpers ────────────────────────────────────────────────
+
+  async function runChunks(ctx: ChunkedCtx, startFrom: number) {
+    const { chunks, source_file_id, precomputed_answers } = ctx;
+    const totalChunks = chunks.length;
+    const hasPrecomputed = Object.keys(precomputed_answers).length > 0;
+    const structure = autoType
+      ? [{ from: 1, to: 9999, type: 'multiple_choice' as const }]
+      : ranges;
+
+    for (let i = startFrom; i < totalChunks; i++) {
+      if (cancelRef.current) break;
+
+      setChunkProgress({
+        current: i,
+        total: totalChunks,
+        inserted: accRef.current.inserted,
+        skipped_duplicate: accRef.current.skipped,
+        unclassified: accRef.current.unclassified,
+        eta: null,
+      });
+
+      const chunkRes = await fetch('/api/upload/chunk', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          source_file_id,
+          chunk_index: i,
+          total_chunks: totalChunks,
+          chunk_text: chunks[i],
+          chunk_ranges: structure,
+          precomputed_answers,
+          auto_type: autoType,
+          auto_answer: hasPrecomputed ? false : autoAnswer,
+        }),
+      });
+
+      if (!chunkRes.ok) {
+        const errData = await chunkRes.json().catch(() => ({})) as { error?: string };
+        setErr(`Chunk ${i + 1}/${totalChunks} thất bại: ${errData.error ?? 'Lỗi không xác định'}`);
+        setFailedChunk(i);
+        setLoading(false);
+        return;
+      }
+
+      const d = await chunkRes.json() as { inserted: number; skipped_duplicate: number; unclassified: number };
+      accRef.current.inserted += d.inserted;
+      accRef.current.skipped += d.skipped_duplicate;
+      accRef.current.unclassified += d.unclassified;
+
+      const elapsed = Date.now() - sessionStartRef.current;
+      const done = i - startFrom + 1;
+      const avgMs = elapsed / done;
+      const remainMs = avgMs * (totalChunks - i - 1);
+      const eta = remainMs > 1000 ? Math.ceil(remainMs / 1000) : null;
+
+      setChunkProgress({
+        current: i + 1,
+        total: totalChunks,
+        inserted: accRef.current.inserted,
+        skipped_duplicate: accRef.current.skipped,
+        unclassified: accRef.current.unclassified,
+        eta,
+      });
+    }
+
+    setLoading(false);
+    if (!cancelRef.current) {
+      setResult({
+        total: accRef.current.inserted + accRef.current.skipped,
+        inserted: accRef.current.inserted,
+        skipped_duplicate: accRef.current.skipped,
+        unclassified: accRef.current.unclassified,
+      });
+    }
+  }
+
+  async function submitChunked(overwrite = false) {
+    if (!file || !chapterId) return;
+    setLoading(true);
+    setErr('');
+    setResult(null);
+    setChunkProgress(null);
+    setFailedChunk(null);
+    cancelRef.current = false;
+    accRef.current = { inserted: 0, skipped: 0, unclassified: 0 };
+
+    const fd = new FormData();
+    fd.append('file', file);
+    fd.append('chapter_id', chapterId);
+    fd.append('structure', JSON.stringify(ranges));
+    fd.append('overwrite', String(overwrite));
+    fd.append('auto_type', String(autoType));
+    fd.append('auto_answer', String(autoAnswer));
+
+    const initRes = await fetch('/api/upload/init', { method: 'POST', body: fd });
+    const initData = await initRes.json() as {
+      error?: string;
+      source_file_id?: string;
+      full_text?: string;
+      precomputed_answers?: Record<string, string>;
+    };
+
+    if (initRes.status === 409 && initData.error === 'FILE_EXISTS') {
+      setLoading(false);
+      if (confirm('File đã upload trước đó. Ghi đè?')) submitChunked(true);
+      return;
+    }
+    if (!initRes.ok) {
+      setLoading(false);
+      setErr(initData.error ?? 'Lỗi khởi tạo');
+      return;
+    }
+
+    const { source_file_id, full_text, precomputed_answers } = initData as {
+      source_file_id: string;
+      full_text: string;
+      precomputed_answers: Record<string, string>;
+    };
+
+    const chunks = splitText(full_text);
+    const ctx: ChunkedCtx = { chunks, source_file_id, precomputed_answers };
+    chunkedCtxRef.current = ctx;
+
+    setChunkProgress({
+      current: 0,
+      total: chunks.length,
+      inserted: 0,
+      skipped_duplicate: 0,
+      unclassified: 0,
+      eta: null,
+    });
+    sessionStartRef.current = Date.now();
+
+    await runChunks(ctx, 0);
+  }
+
+  async function retryChunk() {
+    if (!chunkedCtxRef.current || failedChunk === null) return;
+    setLoading(true);
+    setErr('');
+    setFailedChunk(null);
+    cancelRef.current = false;
+    sessionStartRef.current = Date.now();
+    await runChunks(chunkedCtxRef.current, failedChunk);
+  }
+
+  // ─── Single-endpoint upload ────────────────────────────────────────────────
+
+  async function submitSingle(overwrite = false) {
     if (!file || !chapterId) return;
     setLoading(true);
     setErr('');
@@ -66,15 +272,20 @@ function UploadInner() {
     fd.append('auto_answer', String(autoAnswer));
 
     const res = await fetch('/api/upload', { method: 'POST', body: fd });
-    const j = await res.json();
+    const j = await res.json() as { error?: string } & UploadResult;
     setLoading(false);
 
     if (res.status === 409 && j.error === 'FILE_EXISTS') {
-      if (confirm('File đã upload trước đó. Ghi đè?')) submit(true);
+      if (confirm('File đã upload trước đó. Ghi đè?')) submitSingle(true);
       return;
     }
     if (!res.ok) { setErr(j.error ?? 'Lỗi'); return; }
     setResult(j);
+  }
+
+  function submit(overwrite = false) {
+    if (chunkedMode) return submitChunked(overwrite);
+    return submitSingle(overwrite);
   }
 
   function update(i: number, patch: Partial<QuestionRange>) {
@@ -91,6 +302,10 @@ function UploadInner() {
       </p>
     );
   }
+
+  const pct = chunkProgress
+    ? Math.round((chunkProgress.current / chunkProgress.total) * 100)
+    : 0;
 
   return (
     <div className="max-w-xl">
@@ -115,7 +330,9 @@ function UploadInner() {
         {file ? (
           <div>
             <p className="text-green-700 font-medium text-lg">{file.name}</p>
-            <p className="text-sm text-gray-500 mt-1">{(file.size / 1024).toFixed(0)} KB · nhấn để đổi file</p>
+            <p className="text-sm text-gray-500 mt-1">
+              {(file.size / 1024).toFixed(0)} KB · nhấn để đổi file
+            </p>
           </div>
         ) : (
           <div>
@@ -137,10 +354,12 @@ function UploadInner() {
           />
           <div>
             <p className="font-medium">Tự nhận dạng dạng câu</p>
-            <p className="text-xs text-gray-500">Gemini tự phân loại trắc nghiệm / tự luận / đúng-sai — không cần khai báo cấu trúc</p>
+            <p className="text-xs text-gray-500">
+              Gemini tự phân loại trắc nghiệm / tự luận / đúng-sai — không cần khai báo cấu trúc
+            </p>
           </div>
         </label>
-        <label className="flex items-start gap-3 text-sm cursor-pointer">
+        <label className="flex items-start gap-3 text-sm cursor-pointer mb-3">
           <input
             type="checkbox"
             checked={autoAnswer}
@@ -149,7 +368,25 @@ function UploadInner() {
           />
           <div>
             <p className="font-medium">Tự tìm / sinh đáp án</p>
-            <p className="text-xs text-gray-500">AI đọc file tìm đáp án sẵn có; nếu không có thì tự sinh. Bỏ tick để dùng detect nhanh (không tốn AI call)</p>
+            <p className="text-xs text-gray-500">
+              AI đọc file tìm đáp án sẵn có; nếu không có thì tự sinh. Bỏ tick để dùng detect
+              nhanh (không tốn AI call)
+            </p>
+          </div>
+        </label>
+        <label className="flex items-start gap-3 text-sm cursor-pointer">
+          <input
+            type="checkbox"
+            checked={chunkedMode}
+            onChange={(e) => setChunkedMode(e.target.checked)}
+            className="mt-0.5"
+          />
+          <div>
+            <p className="font-medium">Chế độ file lớn</p>
+            <p className="text-xs text-gray-500">
+              Tách thành từng batch {CHUNK_SIZE} câu để xử lý file có 100+ câu. Tự bật khi file
+              &gt; 2 MB. Ảnh và bảng trong câu hỏi sẽ không được giữ lại.
+            </p>
           </div>
         </label>
       </div>
@@ -185,7 +422,12 @@ function UploadInner() {
                   <option value="true_false">Đúng/Sai</option>
                   <option value="essay">Tự luận</option>
                 </select>
-                <button onClick={() => remove(i)} className="text-red-400 hover:text-red-600 text-sm px-1">✕</button>
+                <button
+                  onClick={() => remove(i)}
+                  className="text-red-400 hover:text-red-600 text-sm px-1"
+                >
+                  ✕
+                </button>
               </div>
             ))}
           </div>
@@ -198,24 +440,89 @@ function UploadInner() {
         </div>
       )}
 
-      {err && <p className="text-red-600 text-sm mb-4">{err}</p>}
+      {/* Error */}
+      {err && (
+        <div className="flex items-center gap-3 text-red-600 text-sm mb-4">
+          <span>{err}</span>
+          {failedChunk !== null && (
+            <button
+              onClick={retryChunk}
+              className="shrink-0 bg-red-50 border border-red-200 text-red-700 hover:bg-red-100 px-3 py-1 rounded text-xs font-medium"
+            >
+              Thử lại chunk {failedChunk + 1}
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* Chunked progress */}
+      {chunkProgress && loading && (
+        <div className="mb-4 bg-blue-50 border border-blue-200 rounded-lg p-4">
+          <div className="flex justify-between items-center text-sm mb-2">
+            <span className="text-blue-800 font-medium">
+              {chunkProgress.current === 0
+                ? 'Bắt đầu xử lý...'
+                : `Chunk ${chunkProgress.current}/${chunkProgress.total} hoàn thành`}
+            </span>
+            {chunkProgress.eta !== null && (
+              <span className="text-blue-600 text-xs">~{chunkProgress.eta}s còn lại</span>
+            )}
+          </div>
+          <div className="w-full bg-blue-100 rounded-full h-2 mb-3">
+            <div
+              className="bg-blue-500 h-2 rounded-full transition-all duration-300"
+              style={{ width: `${pct}%` }}
+            />
+          </div>
+          <div className="flex items-center justify-between">
+            <p className="text-xs text-blue-600">Đừng đóng tab trong khi xử lý</p>
+            <button
+              onClick={() => { cancelRef.current = true; }}
+              className="text-xs text-red-500 hover:text-red-700 underline"
+            >
+              Huỷ
+            </button>
+          </div>
+          {chunkProgress.current > 0 && (
+            <div className="flex gap-4 text-xs text-blue-700 mt-2">
+              <span>Đã thêm: <b>{chunkProgress.inserted}</b></span>
+              <span>Trùng: <b>{chunkProgress.skipped_duplicate}</b></span>
+              <span>Chưa phân loại: <b>{chunkProgress.unclassified}</b></span>
+            </div>
+          )}
+        </div>
+      )}
 
       <button
         onClick={() => submit()}
         disabled={!file || loading}
         className="w-full bg-black text-white py-2.5 rounded-lg text-sm font-medium disabled:opacity-40 flex items-center justify-center gap-2"
       >
-        {loading && <span className="inline-block w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />}
-        {loading ? 'Đang xử lý...' : 'Upload & Phân loại'}
+        {loading && (
+          <span className="inline-block w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+        )}
+        {loading
+          ? chunkProgress
+            ? `Chunk ${chunkProgress.current + 1}/${chunkProgress.total}...`
+            : 'Đang khởi tạo...'
+          : chunkedMode
+          ? 'Upload & Xử lý theo batch'
+          : 'Upload & Phân loại'}
       </button>
 
       {result && (
         <div className="mt-5 p-4 bg-green-50 border border-green-200 rounded-lg text-sm">
           <p className="font-semibold text-green-800 mb-1">Hoàn thành</p>
           <div className="flex gap-4 text-green-700">
-            <span>Đã thêm: <b>{result.inserted}</b></span>
-            <span>Trùng bỏ qua: <b>{result.skipped_duplicate}</b></span>
-            <span>Chưa phân loại: <b>{result.unclassified}</b></span>
+            <span>
+              Đã thêm: <b>{result.inserted}</b>
+            </span>
+            <span>
+              Trùng bỏ qua: <b>{result.skipped_duplicate}</b>
+            </span>
+            <span>
+              Chưa phân loại: <b>{result.unclassified}</b>
+            </span>
           </div>
           <a href="/chapters" className="mt-2 inline-block text-blue-600 hover:underline">
             Xem trong Bank →

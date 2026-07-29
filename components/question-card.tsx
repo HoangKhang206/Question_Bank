@@ -129,10 +129,24 @@ export default function QuestionCard({ q, index }: Props) {
       </div>
 
       {/* Nội dung câu hỏi */}
-      <p className="text-sm font-medium text-gray-900">
-        <span className="text-gray-400 mr-1">Câu {index + 1}.</span>
-        {q.content}
-      </p>
+      {q.content.trimStart().startsWith('<') ? (
+        <>
+          <p className="text-xs text-gray-400 mb-1">Câu {index + 1}.</p>
+          <div
+            className="text-sm text-gray-900
+              [&_img]:max-h-52 [&_img]:w-auto [&_img]:rounded [&_img]:border [&_img]:my-1
+              [&_table]:border-collapse [&_table]:w-full [&_table]:my-2 [&_table]:text-sm
+              [&_td]:border [&_td]:border-gray-300 [&_td]:px-2 [&_td]:py-1
+              [&_th]:border [&_th]:border-gray-300 [&_th]:px-2 [&_th]:py-1 [&_th]:bg-gray-50 [&_th]:font-medium"
+            dangerouslySetInnerHTML={{ __html: q.content }}
+          />
+        </>
+      ) : (
+        <p className="text-sm font-medium text-gray-900">
+          <span className="text-gray-400 mr-1">Câu {index + 1}.</span>
+          {q.content}
+        </p>
+      )}
 
       {/* Body theo type */}
       {q.type === 'multiple_choice' && q.options && q.options.length > 0 && (

@@ -18,6 +18,7 @@ export interface RawQuestion {
   number: number;
   type: QuestionType;
   raw_content: string;
+  html_content?: string;  // HTML với ảnh base64; nếu có thì dùng thay raw_content khi lưu DB
   options?: QuestionOption[] | null;
   answer?: string | null;
   explanation?: string | null;

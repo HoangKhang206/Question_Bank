@@ -1,26 +1,31 @@
 // SP1: Document Parsing (docx)
 // Input : Buffer file .docx
-// Output: HTML string giữ thứ tự nội dung (bold, italic, list preserved)
+// Output: { html: string, text: string }
+//   html — HTML với ảnh inline base64 (dùng để lưu content câu hỏi)
+//   text — plain text (dùng để segment/detect options/answers)
 // Constraint: ≤ 2s cho file 5MB.
 
 import mammoth from 'mammoth';
 
-export async function parseDocx(buffer: Buffer): Promise<string> {
+export async function parseDocx(buffer: Buffer): Promise<{ html: string; text: string }> {
   const result = await mammoth.convertToHtml(
     { buffer },
     {
-      // Bỏ qua ảnh — Phase 1 không hỗ trợ công thức toán/ảnh
-      convertImage: mammoth.images.imgElement(() =>
-        Promise.resolve({ src: '' })
-      )
+      convertImage: mammoth.images.imgElement(async (image) => {
+        const imgBuffer = await image.read();
+        const base64 = imgBuffer.toString('base64');
+        return { src: `data:${image.contentType};base64,${base64}` };
+      })
     }
   );
 
-  if (result.messages.length > 0) {
-    console.warn('[SP1] mammoth warnings:', result.messages);
+  if (result.messages.some((m) => m.type === 'error')) {
+    console.warn('[SP1] mammoth errors:', result.messages.filter((m) => m.type === 'error'));
   }
 
-  return result.value;
+  const html = result.value;
+  const text = htmlToText(html);
+  return { html, text };
 }
 
 /**
@@ -29,12 +34,15 @@ export async function parseDocx(buffer: Buffer): Promise<string> {
  */
 export function htmlToText(html: string): string {
   return html
-    .replace(/<\/(p|div|li|br)>/gi, '\n')
+    .replace(/<img[^>]*>/gi, '')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/(?:p|div|li|tr)>/gi, '\n')
     .replace(/<[^>]+>/g, '')
     .replace(/&nbsp;/g, ' ')
     .replace(/&amp;/g, '&')
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 }

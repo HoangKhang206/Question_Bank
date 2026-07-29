@@ -5,7 +5,7 @@
 
 import {
   Document, Packer, Paragraph, TextRun, AlignmentType, UnderlineType,
-  Table, TableRow, TableCell, WidthType, BorderStyle,
+  Table, TableRow, TableCell, WidthType, BorderStyle, ImageRun,
 } from 'docx';
 import type { Question, ExamMeta, QuestionType, QuestionOption } from '@/lib/types';
 
@@ -42,6 +42,119 @@ function makeOptionCell(o: QuestionOption, isAnswer: boolean, widthPct: number):
       txt(` ${o.text}`),
     ])],
   });
+}
+
+// Strip all HTML → plain text (dùng cho baseContent / fallback)
+function htmlToPlain(content: string): string {
+  return content
+    .replace(/<img[^>]*>/gi, '')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/(?:p|div|li|h[1-6])\b[^>]*>/gi, '\n')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+// Đọc kích thước ảnh từ buffer (PNG / JPEG) — không cần thư viện ngoài
+function getImageDimensions(buf: Buffer, mime: string): { width: number; height: number } {
+  try {
+    if (mime.includes('png') && buf.length >= 24) {
+      return { width: buf.readUInt32BE(16), height: buf.readUInt32BE(20) };
+    }
+    if ((mime.includes('jpeg') || mime.includes('jpg')) && buf.length > 4) {
+      let i = 2;
+      while (i + 4 < buf.length) {
+        if (buf[i] !== 0xFF) break;
+        const marker = buf[i + 1];
+        if (marker >= 0xC0 && marker <= 0xC3) {
+          return { height: buf.readUInt16BE(i + 5), width: buf.readUInt16BE(i + 7) };
+        }
+        i += 2 + buf.readUInt16BE(i + 2);
+      }
+    }
+  } catch { /* fallback bên dưới */ }
+  return { width: 400, height: 300 };
+}
+
+// Scale ảnh để không vượt quá chiều rộng nội dung A4 (~480px tương đương ~12.7cm)
+function fitToPage(width: number, height: number, maxW = 480): { width: number; height: number } {
+  if (width <= maxW) return { width, height };
+  return { width: maxW, height: Math.round(height * maxW / width) };
+}
+
+// Chuyển <img src="data:...;base64,..."> → ImageRun
+function htmlImgToRun(imgTag: string): ImageRun | null {
+  const srcM = imgTag.match(/src="([^"]+)"/i);
+  if (!srcM) return null;
+  const dataM = srcM[1].match(/^data:([^;]+);base64,(.+)$/);
+  if (!dataM) return null;
+  const mime = dataM[1].toLowerCase();
+  const buf = Buffer.from(dataM[2], 'base64');
+  const raw = getImageDimensions(buf, mime);
+  const dims = fitToPage(raw.width, raw.height);
+  const type = (mime.includes('jpeg') || mime.includes('jpg')) ? 'jpg'
+    : mime.includes('gif') ? 'gif'
+    : 'png';
+  return new ImageRun({ data: buf, transformation: dims, type });
+}
+
+// Convert HTML <table> string → docx Table (có border)
+function htmlTableToDocx(tableHtml: string): Table | null {
+  const rows: TableRow[] = [];
+  for (const rowMatch of tableHtml.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/gi)) {
+    const cells: TableCell[] = [];
+    for (const cellMatch of rowMatch[1].matchAll(/<(?:td|th)[^>]*>([\s\S]*?)<\/(?:td|th)>/gi)) {
+      const cellText = htmlToPlain(cellMatch[1]).trim();
+      const isHeader = cellMatch[0].trimStart().startsWith('<th');
+      cells.push(new TableCell({
+        children: [para([txt(cellText, isHeader ? { bold: true } : {})])],
+      }));
+    }
+    if (cells.length > 0) rows.push(new TableRow({ children: cells }));
+  }
+  if (rows.length === 0) return null;
+  return new Table({ width: { size: 100, type: WidthType.PERCENTAGE }, rows });
+}
+
+// Convert HTML content → mảng Paragraph/Table (xử lý bảng inline)
+// leadRun: TextRun được prepend vào text block đầu tiên (VD: "Câu 1. " bold)
+function htmlToDocxBlocks(
+  content: string,
+  leadRun?: TextRun
+): (Paragraph | Table)[] {
+  const result: (Paragraph | Table)[] = [];
+  let usedLead = false;
+
+  const parts = content.split(/(<table[\s\S]*?<\/table>|<img[^>]*\/?>)/gi);
+  for (const part of parts) {
+    if (/<table/i.test(part)) {
+      const table = htmlTableToDocx(part);
+      if (table) result.push(table);
+    } else if (/<img/i.test(part)) {
+      const imgRun = htmlImgToRun(part);
+      if (imgRun) result.push(para([imgRun]));
+    } else {
+      const text = htmlToPlain(part);
+      for (const line of text.split('\n')) {
+        const t = line.trim();
+        if (!t) continue;
+        if (!usedLead && leadRun) {
+          result.push(para([leadRun, txt(t)]));
+          usedLead = true;
+        } else {
+          result.push(para([txt(t)]));
+        }
+      }
+    }
+  }
+
+  if (leadRun && !usedLead) result.unshift(para([leadRun]));
+  return result;
 }
 
 function stripQNum(content: string): string {
@@ -84,7 +197,7 @@ function txt(text: string, opts: ConstructorParameters<typeof TextRun>[0] = {}):
   return new TextRun({ text, ...(typeof opts === 'string' ? {} : opts) });
 }
 
-function para(runs: TextRun[], opts: ConstructorParameters<typeof Paragraph>[0] = {}): Paragraph {
+function para(runs: (TextRun | ImageRun)[], opts: ConstructorParameters<typeof Paragraph>[0] = {}): Paragraph {
   return new Paragraph({ children: runs, ...(typeof opts === 'object' ? opts : {}) });
 }
 
@@ -179,7 +292,8 @@ export async function generateExamDocx(
     children.push(empty());
 
     qs.forEach((q, idx) => {
-      const baseContent = stripQNum(q.content);
+      const isHtml = q.content.trimStart().startsWith('<');
+      const baseContent = stripQNum(htmlToPlain(q.content));
       const hasStoredOptions = !!(q.options && q.options.length > 0);
 
       // Cho true_false không có options trong DB: parse statements từ content
@@ -194,10 +308,13 @@ export async function generateExamDocx(
         displayStem = stripOptions(baseContent);
       }
 
-      children.push(para([
-        txt(`Câu ${idx + 1}. `, { bold: true }),
-        txt(displayStem),
-      ]));
+      const leadRun = txt(`Câu ${idx + 1}. `, { bold: true });
+      if (isHtml) {
+        // html_content đã strip "Câu N." và đã loại options — render cả bảng/ảnh
+        children.push(...htmlToDocxBlocks(q.content, leadRun));
+      } else {
+        children.push(para([leadRun, txt(displayStem)]));
+      }
 
       if (t === 'multiple_choice') {
         const opts = q.options ?? [];
