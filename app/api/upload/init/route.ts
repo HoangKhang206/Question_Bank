@@ -99,7 +99,11 @@ export async function POST(req: Request) {
       for (const [k, v] of detected.answers) precomputedAnswers[String(k)] = v;
     }
 
-    const total_questions_detected = Array.from(text.matchAll(QUESTION_MARKER)).length;
+    // Chỉ đếm marker trong phần câu hỏi — bỏ phần lời giải ra khỏi count
+    // để total_chunks không bị nhân đôi khi file có solution section
+    const solBoundaryM = text.match(/\n(?:Lời giải|Hướng dẫn(?:\s+giải)?|Giải|Đáp án)\b/i);
+    const contentText = solBoundaryM?.index != null ? text.slice(0, solBoundaryM.index) : text;
+    const total_questions_detected = Array.from(contentText.matchAll(QUESTION_MARKER)).length;
 
     console.log(
       `[UPLOAD/INIT] ${file.name}: ${total_questions_detected} câu, ` +

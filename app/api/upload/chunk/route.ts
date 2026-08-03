@@ -3,7 +3,10 @@
 //                precomputed_answers, auto_type, auto_answer }
 // Output: { chunk_index, inserted, skipped_duplicate, unclassified }
 // Constraint: ≤10s per chunk (~40 câu). HTML download từ Storage (~0.5s).
-// Ảnh và bảng được giữ nguyên — chunk download full HTML rồi tự cắt phần của mình.
+//
+// Design: mỗi chunk download FULL HTML → segmentQuestions trên TOÀN BỘ text
+// (đảm bảo PHẦN offset đúng) → slice allQuestions[i*N..(i+1)*N] để lấy phần của chunk.
+// Không cắt text trước khi segment — tránh sai offset khi file có nhiều PHẦN.
 
 import { NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase/server';
@@ -16,7 +19,6 @@ import type { QuestionRange } from '@/lib/types';
 export const runtime = 'nodejs';
 export const maxDuration = 10;
 
-const QUESTION_MARKER_RE = /^(?:Câu\s+)?(\d+)\s*[.):]/gm;
 const CHUNK_SIZE = 40;
 
 interface ChunkBody {
@@ -58,31 +60,12 @@ export async function POST(req: Request) {
       storage_path: string;
     };
 
-    // Download HTML (có ảnh/bảng) từ Storage — init đã upload tại đây
+    // Download full HTML từ Storage — init đã upload tại đây
     const htmlPath = storagePath.replace(/\.[^.]+$/, '.html');
     const { data: htmlBlob, error: dlErr } = await sb.storage.from('sources').download(htmlPath);
     if (dlErr) throw new Error(`HTML download: ${dlErr.message}`);
     const html = Buffer.from(await htmlBlob.arrayBuffer()).toString('utf-8');
-
-    // Tìm vị trí các câu hỏi trong plain text để cắt chunk
     const text = htmlToText(html);
-    const markerIndices: number[] = [];
-    for (const m of text.matchAll(QUESTION_MARKER_RE)) {
-      markerIndices.push(m.index!);
-    }
-
-    const startIdx = markerIndices[chunkIndex * CHUNK_SIZE];
-    const endIdx = markerIndices[(chunkIndex + 1) * CHUNK_SIZE] ?? text.length;
-
-    // Chunk này không có câu nào (xảy ra nếu total_chunks tính dư)
-    if (startIdx === undefined) {
-      if (chunkIndex === total_chunks - 1) {
-        await sb.from('source_files').update({ status: 'done' }).eq('id', source_file_id);
-      }
-      return NextResponse.json({ chunk_index: chunkIndex, inserted: 0, skipped_duplicate: 0, unclassified: 0 });
-    }
-
-    const chunk_text = text.slice(startIdx, endIdx);
 
     const answersMap = new Map<number, string>(
       Object.entries(precomputed_answers).map(([k, v]) => [parseInt(k, 10), v])
@@ -94,8 +77,32 @@ export async function POST(req: Request) {
       autoAnswer: answersMap.size > 0 ? false : auto_answer,
     };
 
-    // SP2: Segment — truyền full html để giữ ảnh/bảng cho câu trong chunk này
-    const rawQuestions = segmentQuestions(chunk_text, chunk_ranges, answersMap.size > 0 ? answersMap : undefined, html);
+    // SP2: Segment TOÀN BỘ text để PHẦN offset được tính đúng
+    // Sau đó slice lấy phần của chunk này theo index (không cắt text trước)
+    let allQuestions: ReturnType<typeof segmentQuestions> = [];
+    try {
+      allQuestions = segmentQuestions(
+        text,
+        chunk_ranges,
+        answersMap.size > 0 ? answersMap : undefined,
+        html
+      );
+    } catch (segErr) {
+      console.warn(`[UPLOAD/CHUNK] segmentQuestions error: ${segErr}`);
+      // allQuestions = [] → rawQuestions sẽ rỗng → return 0 counts
+    }
+
+    const startQ = chunkIndex * CHUNK_SIZE;
+    const rawQuestions = allQuestions.slice(startQ, startQ + CHUNK_SIZE);
+
+    // Chunk rỗng: xảy ra khi total_questions_detected > allQuestions.length
+    if (rawQuestions.length === 0) {
+      if (chunkIndex === total_chunks - 1) {
+        await sb.from('source_files').update({ status: 'done' }).eq('id', source_file_id);
+      }
+      console.log(`[UPLOAD/CHUNK] ${chunkIndex + 1}/${total_chunks}: chunk rỗng, bỏ qua`);
+      return NextResponse.json({ chunk_index: chunkIndex, inserted: 0, skipped_duplicate: 0, unclassified: 0 });
+    }
 
     // SP3: Classify
     const classified = await classifyAll(rawQuestions, classifyOpts);
@@ -133,7 +140,8 @@ export async function POST(req: Request) {
 
     console.log(
       `[UPLOAD/CHUNK] ${chunkIndex + 1}/${total_chunks}: ` +
-      `${rawQuestions.length} câu → ${inserted} inserted, ${skipped_duplicate} dup, ${unclassified} unclassified`
+      `câu ${startQ + 1}–${startQ + rawQuestions.length} → ` +
+      `${inserted} inserted, ${skipped_duplicate} dup, ${unclassified} unclassified`
     );
 
     return NextResponse.json({ chunk_index: chunkIndex, inserted, skipped_duplicate, unclassified });
