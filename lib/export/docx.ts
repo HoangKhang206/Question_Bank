@@ -2,12 +2,14 @@
 // Input : examName, questions[], variant, meta
 // Output: Buffer .docx với định dạng chuẩn đề thi Việt Nam
 // Sections: Phần I (trắc nghiệm) → Phần II (đúng/sai) → Phần III (trả lời ngắn) → Phần IV (tự luận)
+// Math: math spans được thay bằng placeholder text → sau Packer inject OMML qua JSZip
 
 import {
   Document, Packer, Paragraph, TextRun, AlignmentType, UnderlineType,
   Table, TableRow, TableCell, WidthType, BorderStyle, ImageRun,
 } from 'docx';
 import type { Question, ExamMeta, QuestionType, QuestionOption } from '@/lib/types';
+import { injectOmmlIntoDocx, type ExportMathEntry } from './omml';
 
 export type ExportVariant = 'blank' | 'with_answer';
 
@@ -25,6 +27,8 @@ const NO_BORDERS = {
   top: NO_BORDER, bottom: NO_BORDER, left: NO_BORDER, right: NO_BORDER,
   insideHorizontal: NO_BORDER, insideVertical: NO_BORDER,
 };
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
 function optionLayout(opts: QuestionOption[]): 1 | 2 | 4 {
   const maxLen = Math.max(...opts.map((o) => `${o.key}. ${o.text}`.length));
@@ -44,24 +48,26 @@ function makeOptionCell(o: QuestionOption, isAnswer: boolean, widthPct: number):
   });
 }
 
-// LaTeX → ký tự đọc được (dùng cho export text)
+function unescHtml(s: string): string {
+  return s
+    .replace(/&amp;/g, '&').replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>').replace(/&quot;/g, '"');
+}
+
+// LaTeX → readable fallback (dùng khi không đi qua OMML injection, VD: baseContent)
 function latexToReadable(s: string): string {
   let r = s;
-  for (let i = 0; i < 5; i++) {
-    r = r.replace(/\\frac\{([^{}]*)\}\{([^{}]*)\}/g, '($1)/($2)');
-  }
+  for (let i = 0; i < 5; i++) r = r.replace(/\\frac\{([^{}]*)\}\{([^{}]*)\}/g, '($1)/($2)');
   r = r.replace(/\\sqrt\[([^\]]*)\]\{([^{}]*)\}/g, '∜($2)');
   r = r.replace(/\\sqrt\{([^{}]*)\}/g, '√($1)');
   r = r.replace(/\{([^{}]+)\}\^\{([^{}]+)\}/g, '$1^($2)');
   r = r.replace(/\{([^{}]+)\}_\{([^{}]+)\}/g, '$1_($2)');
-  r = r.replace(/\^\{([^{}]+)\}/g, '^($1)');
-  r = r.replace(/_\{([^{}]+)\}/g, '_($1)');
+  r = r.replace(/\^\{([^{}]+)\}/g, '^($1)').replace(/_\{([^{}]+)\}/g, '_($1)');
   r = r.replace(/\\overline\{([^{}]*)\}/g, '$1̅');
   r = r.replace(/\\left\(/g, '(').replace(/\\right\)/g, ')');
   r = r.replace(/\\left\[/g, '[').replace(/\\right\]/g, ']');
   r = r
-    .replace(/\\times/g, '×').replace(/\\div/g, '÷')
-    .replace(/\\pm/g, '±').replace(/\\cdot/g, '·')
+    .replace(/\\times/g, '×').replace(/\\div/g, '÷').replace(/\\pm/g, '±').replace(/\\cdot/g, '·')
     .replace(/\\rightarrow/g, '→').replace(/\\leftarrow/g, '←')
     .replace(/\\rightleftharpoons/g, '⇌').replace(/\\leftrightarrow/g, '↔')
     .replace(/\\infty/g, '∞')
@@ -69,37 +75,51 @@ function latexToReadable(s: string): string {
     .replace(/\\delta/g, 'δ').replace(/\\Delta/g, 'Δ').replace(/\\pi/g, 'π')
     .replace(/\\mu/g, 'μ').replace(/\\lambda/g, 'λ').replace(/\\sigma/g, 'σ')
     .replace(/\\Omega/g, 'Ω').replace(/\\omega/g, 'ω').replace(/\\theta/g, 'θ');
-  r = r.replace(/\\[a-zA-Z]+/g, '').replace(/[{}]/g, '');
-  return r.trim();
+  return r.replace(/\\[a-zA-Z]+/g, '').replace(/[{}]/g, '').trim();
 }
 
-function unescHtml(s: string): string {
-  return s.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"');
-}
-
-// Strip all HTML → plain text (toán học được chuyển sang ký tự đọc được)
+// Strip all HTML → plain text (fallback path; math → readable text)
 function htmlToPlain(content: string): string {
   return content
     .replace(/<img[^>]*>/gi, '')
-    // math-display: $$...$$ → readable
     .replace(/<span class="math-display">\$\$([\s\S]*?)\$\$<\/span>/gi,
-      (_, latex) => latexToReadable(unescHtml(latex)))
-    // math-inline: $...$ → readable
+      (_, l) => latexToReadable(unescHtml(l)))
     .replace(/<span class="math-inline">\$([\s\S]*?)\$<\/span>/gi,
-      (_, latex) => latexToReadable(unescHtml(latex)))
+      (_, l) => latexToReadable(unescHtml(l)))
     .replace(/<br\s*\/?>/gi, '\n')
     .replace(/<\/(?:p|div|li|h[1-6])\b[^>]*>/gi, '\n')
     .replace(/<[^>]+>/g, '')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
+    .replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 }
 
-// Đọc kích thước ảnh từ buffer (PNG / JPEG) — không cần thư viện ngoài
+// Extract math spans → placeholder text, collect entry for later OMML injection
+function extractMathSpans(html: string, mathEntries: ExportMathEntry[]): string {
+  return html
+    .replace(/<span class="math-display">\$\$([\s\S]*?)\$\$<\/span>/gi, (_, latex) => {
+      const placeholder = `__DMATH_${mathEntries.length}__`;
+      mathEntries.push({ placeholder, latex: unescHtml(latex), display: true });
+      return placeholder;
+    })
+    .replace(/<span class="math-inline">\$([\s\S]*?)\$<\/span>/gi, (_, latex) => {
+      const placeholder = `__MATH_${mathEntries.length}__`;
+      mathEntries.push({ placeholder, latex: unescHtml(latex), display: false });
+      return placeholder;
+    });
+}
+
+// Split text by math placeholders → separate TextRuns so placeholders stay isolated
+// (Word XML: each placeholder must be alone in its <w:t> for JSZip replacement to work)
+const PLACEHOLDER_RE = /(__D?MATH_\d+__)/g;
+function textToRuns(text: string, baseOpts: ConstructorParameters<typeof TextRun>[0] = {}): TextRun[] {
+  const opts = typeof baseOpts === 'string' ? {} : baseOpts;
+  return text.split(PLACEHOLDER_RE).filter(Boolean).map((part) => txt(part, opts));
+}
+
+// ── Image helpers ─────────────────────────────────────────────────────────────
+
 function getImageDimensions(buf: Buffer, mime: string): { width: number; height: number } {
   try {
     if (mime.includes('png') && buf.length >= 24) {
@@ -110,23 +130,19 @@ function getImageDimensions(buf: Buffer, mime: string): { width: number; height:
       while (i + 4 < buf.length) {
         if (buf[i] !== 0xFF) break;
         const marker = buf[i + 1];
-        if (marker >= 0xC0 && marker <= 0xC3) {
-          return { height: buf.readUInt16BE(i + 5), width: buf.readUInt16BE(i + 7) };
-        }
+        if (marker >= 0xC0 && marker <= 0xC3) return { height: buf.readUInt16BE(i + 5), width: buf.readUInt16BE(i + 7) };
         i += 2 + buf.readUInt16BE(i + 2);
       }
     }
-  } catch { /* fallback bên dưới */ }
+  } catch { /* fallback */ }
   return { width: 400, height: 300 };
 }
 
-// Scale ảnh để không vượt quá chiều rộng nội dung A4 (~480px tương đương ~12.7cm)
 function fitToPage(width: number, height: number, maxW = 480): { width: number; height: number } {
   if (width <= maxW) return { width, height };
   return { width: maxW, height: Math.round(height * maxW / width) };
 }
 
-// Chuyển <img src="data:...;base64,..."> → ImageRun
 function htmlImgToRun(imgTag: string): ImageRun | null {
   const srcM = imgTag.match(/src="([^"]+)"/i);
   if (!srcM) return null;
@@ -134,40 +150,44 @@ function htmlImgToRun(imgTag: string): ImageRun | null {
   if (!dataM) return null;
   const mime = dataM[1].toLowerCase();
   const buf = Buffer.from(dataM[2], 'base64');
-  const raw = getImageDimensions(buf, mime);
-  const dims = fitToPage(raw.width, raw.height);
-  const type = (mime.includes('jpeg') || mime.includes('jpg')) ? 'jpg'
-    : mime.includes('gif') ? 'gif'
-    : 'png';
+  const dims = fitToPage(...Object.values(getImageDimensions(buf, mime)) as [number, number]);
+  const type = (mime.includes('jpeg') || mime.includes('jpg')) ? 'jpg' : mime.includes('gif') ? 'gif' : 'png';
   return new ImageRun({ data: buf, transformation: dims, type });
 }
 
-// Cell content → Paragraph[] (giữ ảnh và toán học bên trong ô bảng)
-function htmlCellToChildren(cellHtml: string, bold = false): Paragraph[] {
+// ── Table helpers ─────────────────────────────────────────────────────────────
+
+// Cell content → Paragraph[] (giữ ảnh, math → placeholder cho OMML injection)
+function htmlCellToChildren(
+  cellHtml: string,
+  bold: boolean,
+  mathEntries: ExportMathEntry[]
+): Paragraph[] {
+  const processed = extractMathSpans(cellHtml, mathEntries);
   const result: Paragraph[] = [];
-  const parts = cellHtml.split(/(<img[^>]*\/?>)/gi);
+  const parts = processed.split(/(<img[^>]*\/?>)/gi);
   for (const part of parts) {
     if (/<img/i.test(part)) {
       const imgRun = htmlImgToRun(part);
       if (imgRun) result.push(para([imgRun]));
     } else {
       const text = htmlToPlain(part).trim();
-      if (text) result.push(para([txt(text, bold ? { bold: true } : {})]));
+      if (text) {
+        const runs = textToRuns(text, bold ? { bold: true } : {});
+        result.push(para(runs));
+      }
     }
   }
   return result.length > 0 ? result : [para([txt('')])];
 }
 
-// Convert HTML <table> string → docx Table (có border, giữ ảnh trong cell)
-function htmlTableToDocx(tableHtml: string): Table | null {
+function htmlTableToDocx(tableHtml: string, mathEntries: ExportMathEntry[]): Table | null {
   const rows: TableRow[] = [];
   for (const rowMatch of tableHtml.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/gi)) {
     const cells: TableCell[] = [];
     for (const cellMatch of rowMatch[1].matchAll(/<(?:td|th)[^>]*>([\s\S]*?)<\/(?:td|th)>/gi)) {
       const isHeader = cellMatch[0].trimStart().startsWith('<th');
-      cells.push(new TableCell({
-        children: htmlCellToChildren(cellMatch[1], isHeader),
-      }));
+      cells.push(new TableCell({ children: htmlCellToChildren(cellMatch[1], isHeader, mathEntries) }));
     }
     if (cells.length > 0) rows.push(new TableRow({ children: cells }));
   }
@@ -175,19 +195,26 @@ function htmlTableToDocx(tableHtml: string): Table | null {
   return new Table({ width: { size: 100, type: WidthType.PERCENTAGE }, rows });
 }
 
-// Convert HTML content → mảng Paragraph/Table (xử lý bảng inline)
-// leadRun: TextRun được prepend vào text block đầu tiên (VD: "Câu 1. " bold)
+// ── Main block converter ──────────────────────────────────────────────────────
+
+// Convert HTML content → mảng Paragraph/Table
+// leadRun: TextRun prepend vào text block đầu tiên ("Câu 1. " bold)
+// mathEntries: accumulate math placeholders for post-processing
 function htmlToDocxBlocks(
   content: string,
-  leadRun?: TextRun
+  leadRun: TextRun | undefined,
+  mathEntries: ExportMathEntry[]
 ): (Paragraph | Table)[] {
+  // First pass: replace math spans with placeholders
+  const processed = extractMathSpans(content, mathEntries);
+
   const result: (Paragraph | Table)[] = [];
   let usedLead = false;
 
-  const parts = content.split(/(<table[\s\S]*?<\/table>|<img[^>]*\/?>)/gi);
+  const parts = processed.split(/(<table[\s\S]*?<\/table>|<img[^>]*\/?>)/gi);
   for (const part of parts) {
     if (/<table/i.test(part)) {
-      const table = htmlTableToDocx(part);
+      const table = htmlTableToDocx(part, mathEntries);
       if (table) result.push(table);
     } else if (/<img/i.test(part)) {
       const imgRun = htmlImgToRun(part);
@@ -197,11 +224,12 @@ function htmlToDocxBlocks(
       for (const line of text.split('\n')) {
         const t = line.trim();
         if (!t) continue;
+        const runs = textToRuns(t);
         if (!usedLead && leadRun) {
-          result.push(para([leadRun, txt(t)]));
+          result.push(para([leadRun, ...runs]));
           usedLead = true;
         } else {
-          result.push(para([txt(t)]));
+          result.push(para(runs));
         }
       }
     }
@@ -210,6 +238,8 @@ function htmlToDocxBlocks(
   if (leadRun && !usedLead) result.unshift(para([leadRun]));
   return result;
 }
+
+// ── Misc ──────────────────────────────────────────────────────────────────────
 
 function stripQNum(content: string): string {
   return content.replace(/^Câu\s*\d+\s*[.:]\s*/u, '');
@@ -224,16 +254,13 @@ function stripOptions(content: string): string {
 function parseTrueFalseFromContent(content: string): { stem: string; stmts: Array<{ key: string; text: string }> } {
   const startIdx = content.search(/\s+[a-dA-D]\s*[.)]\s/);
   if (startIdx === -1) return { stem: content, stmts: [] };
-
   const stem = content.slice(0, startIdx).trim();
   const rest = content.slice(startIdx).trim();
-
   const parts = rest.split(/\s+(?=[a-dA-D][.)]\s)/);
   const stmts = parts
     .map((p) => p.match(/^([a-dA-D])[.)]\s+([\s\S]+)$/))
     .filter((m): m is RegExpMatchArray => m !== null)
     .map((m) => ({ key: m[1].toLowerCase(), text: m[2].trim() }));
-
   return { stem, stmts };
 }
 
@@ -255,16 +282,13 @@ function para(runs: (TextRun | ImageRun)[], opts: ConstructorParameters<typeof P
   return new Paragraph({ children: runs, ...(typeof opts === 'object' ? opts : {}) });
 }
 
-function empty(): Paragraph {
-  return new Paragraph({ children: [] });
-}
+function empty(): Paragraph { return new Paragraph({ children: [] }); }
 
 function hrLine(): Paragraph {
-  return new Paragraph({
-    children: [txt('─'.repeat(80), { size: 12 })],
-    alignment: AlignmentType.CENTER
-  });
+  return new Paragraph({ children: [txt('─'.repeat(80), { size: 12 })], alignment: AlignmentType.CENTER });
 }
+
+// ── Main export function ──────────────────────────────────────────────────────
 
 export async function generateExamDocx(
   examName: string,
@@ -273,21 +297,16 @@ export async function generateExamDocx(
   meta?: ExamMeta
 ): Promise<Buffer> {
   const children: (Paragraph | Table)[] = [];
+  const mathEntries: ExportMathEntry[] = [];
 
   // ── Header ───────────────────────────────────────────────────────────────
 
   if (meta?.school) {
-    children.push(para(
-      [txt(meta.school, { bold: true, size: 22 })],
-      { alignment: AlignmentType.LEFT }
-    ));
+    children.push(para([txt(meta.school, { bold: true, size: 22 })], { alignment: AlignmentType.LEFT }));
   }
 
   const title = meta?.exam_title || examName;
-  children.push(para(
-    [txt(title, { bold: true, size: 28 })],
-    { alignment: AlignmentType.CENTER }
-  ));
+  children.push(para([txt(title, { bold: true, size: 28 })], { alignment: AlignmentType.CENTER }));
 
   const subjectParts = [
     meta?.subject ? `Môn: ${meta.subject}` : null,
@@ -296,15 +315,10 @@ export async function generateExamDocx(
   ].filter(Boolean);
 
   if (subjectParts.length > 0) {
-    children.push(para(
-      [txt(subjectParts.join(' – '), { size: 22 })],
-      { alignment: AlignmentType.CENTER }
-    ));
+    children.push(para([txt(subjectParts.join(' – '), { size: 22 })], { alignment: AlignmentType.CENTER }));
   }
 
   children.push(hrLine());
-
-  // ── Thông tin thí sinh ────────────────────────────────────────────────────
 
   children.push(para([
     txt('Họ và tên thí sinh: '),
@@ -313,25 +327,17 @@ export async function generateExamDocx(
     txt('...............', { underline: { type: UnderlineType.SINGLE } }),
   ]));
 
-  // ── Cho biết ─────────────────────────────────────────────────────────────
-
   if (meta?.constants?.trim()) {
-    children.push(para(
-      [txt(meta.constants.trim(), { italics: true, size: 22 })],
-    ));
+    children.push(para([txt(meta.constants.trim(), { italics: true, size: 22 })]));
   }
 
   children.push(empty());
 
-  // ── Sections theo dạng câu ───────────────────────────────────────────────
+  // ── Sections ─────────────────────────────────────────────────────────────
 
-  // Group questions by type, preserve relative order
   const grouped = new Map<QuestionType, Question[]>();
   for (const t of TYPE_ORDER) grouped.set(t, []);
-  for (const q of questions) {
-    const arr = grouped.get(q.type);
-    if (arr) arr.push(q);
-  }
+  for (const q of questions) { const arr = grouped.get(q.type); if (arr) arr.push(q); }
 
   let sectionIdx = 0;
 
@@ -340,9 +346,10 @@ export async function generateExamDocx(
     if (!qs || qs.length === 0) continue;
 
     const roman = ROMAN[sectionIdx++] ?? String(sectionIdx);
-    const header = `Phần ${roman}. Thí sinh trả lời từ câu 1 đến câu ${qs.length}. ${SECTION_INSTRUCTION[t]}`;
-
-    children.push(para([txt(header, { bold: true, size: 22 })], { spacing: { before: 120 } }));
+    children.push(para(
+      [txt(`Phần ${roman}. Thí sinh trả lời từ câu 1 đến câu ${qs.length}. ${SECTION_INSTRUCTION[t]}`, { bold: true, size: 22 })],
+      { spacing: { before: 120 } }
+    ));
     children.push(empty());
 
     qs.forEach((q, idx) => {
@@ -350,7 +357,6 @@ export async function generateExamDocx(
       const baseContent = stripQNum(htmlToPlain(q.content));
       const hasStoredOptions = !!(q.options && q.options.length > 0);
 
-      // Cho true_false không có options trong DB: parse statements từ content
       let displayStem = hasStoredOptions ? stripOptions(baseContent) : baseContent;
       let parsedTFStmts: Array<{ key: string; text: string }> = [];
 
@@ -364,8 +370,7 @@ export async function generateExamDocx(
 
       const leadRun = txt(`Câu ${idx + 1}. `, { bold: true });
       if (isHtml) {
-        // html_content đã strip "Câu N." và đã loại options — render cả bảng/ảnh
-        children.push(...htmlToDocxBlocks(q.content, leadRun));
+        children.push(...htmlToDocxBlocks(q.content, leadRun, mathEntries));
       } else {
         children.push(para([leadRun, txt(displayStem)]));
       }
@@ -374,7 +379,6 @@ export async function generateExamDocx(
         const opts = q.options ?? [];
         const isAns = (key: string) => variant === 'with_answer' && key === q.answer;
         const layout = optionLayout(opts);
-
         if (layout === 4) {
           opts.forEach((o) => {
             children.push(para([
@@ -386,25 +390,21 @@ export async function generateExamDocx(
           const pairs = [[opts[0], opts[1]], [opts[2], opts[3]]];
           for (const pair of pairs) {
             children.push(new Table({
-              width: { size: 100, type: WidthType.PERCENTAGE },
-              borders: NO_BORDERS,
+              width: { size: 100, type: WidthType.PERCENTAGE }, borders: NO_BORDERS,
               rows: [new TableRow({ children: pair.filter(Boolean).map((o) => makeOptionCell(o, isAns(o.key), 50)) })],
             }));
           }
         } else {
           children.push(new Table({
-            width: { size: 100, type: WidthType.PERCENTAGE },
-            borders: NO_BORDERS,
+            width: { size: 100, type: WidthType.PERCENTAGE }, borders: NO_BORDERS,
             rows: [new TableRow({ children: opts.map((o) => makeOptionCell(o, isAns(o.key), 25)) })],
           }));
         }
-
       } else if (t === 'true_false') {
         const answerMap = parseTrueFalse(q.answer);
         const stmts = hasStoredOptions
           ? (q.options ?? []).map((o) => ({ key: o.key, text: o.text }))
           : parsedTFStmts;
-
         stmts.forEach((o) => {
           const isCorrect = variant === 'with_answer' && answerMap[o.key] === 'Đúng';
           children.push(para([
@@ -412,7 +412,6 @@ export async function generateExamDocx(
             txt(`) ${o.text}`),
           ], { indent: { left: 720 } }));
         });
-
       } else if (t === 'short_answer') {
         if (variant === 'with_answer' && q.answer) {
           children.push(para(
@@ -422,7 +421,6 @@ export async function generateExamDocx(
         } else {
           children.push(para([txt('Trả lời: ........................................')], { indent: { left: 720 } }));
         }
-
       } else if (t === 'essay') {
         if (variant === 'with_answer' && q.answer) {
           children.push(para(
@@ -444,5 +442,12 @@ export async function generateExamDocx(
   }
 
   const doc = new Document({ sections: [{ properties: {}, children }] });
-  return await Packer.toBuffer(doc);
+  let buffer = await Packer.toBuffer(doc);
+
+  // Inject OMML vào XML sau khi docx.js đã generate xong
+  if (mathEntries.length > 0) {
+    buffer = await injectOmmlIntoDocx(buffer, mathEntries);
+  }
+
+  return buffer;
 }
