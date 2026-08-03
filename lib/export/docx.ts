@@ -63,7 +63,7 @@ function unescHtml(s: string): string {
 function latexToReadable(s: string): string {
   let r = s;
   for (let i = 0; i < 5; i++) r = r.replace(/\\frac\{([^{}]*)\}\{([^{}]*)\}/g, '($1)/($2)');
-  r = r.replace(/\\sqrt\[([^\]]*)\]\{([^{}]*)\}/g, '∜($2)');
+  r = r.replace(/\\sqrt\[([^\]]*)\]\{([^{}]*)\}/g, '$1√($2)');
   r = r.replace(/\\sqrt\{([^{}]*)\}/g, '√($1)');
   r = r.replace(/\{([^{}]+)\}\^\{([^{}]+)\}/g, '$1^($2)');
   r = r.replace(/\{([^{}]+)\}_\{([^{}]+)\}/g, '$1_($2)');
@@ -145,8 +145,8 @@ function plainToRuns(
     if (part.startsWith('$$') && part.endsWith('$$')) {
       const latex = part.slice(2, -2).trim();
       if (latex) {
-        const ph = `__MATH_${mathEntries.length}__`;
-        mathEntries.push({ placeholder: ph, latex, display: false });
+        const ph = `__DMATH_${mathEntries.length}__`;
+        mathEntries.push({ placeholder: ph, latex, display: true });
         runs.push(txt(ph, opts));
       }
     } else if (part.startsWith('$') && part.endsWith('$')) {

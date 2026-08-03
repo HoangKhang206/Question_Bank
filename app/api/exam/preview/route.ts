@@ -6,6 +6,9 @@ import { supabaseAdmin } from '@/lib/supabase/server';
 import { sampleQuestions } from '@/lib/sample/sample';
 import type { ExamConfig, Question } from '@/lib/types';
 
+export const runtime = 'nodejs';
+export const maxDuration = 10;
+
 export async function POST(req: Request) {
   try {
     const config = (await req.json()) as ExamConfig;

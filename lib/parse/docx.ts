@@ -27,7 +27,8 @@ async function preprocessOmml(buffer: Buffer): Promise<{ buffer: Buffer; mathEnt
   if (mathEntries.length === 0) return { buffer, mathEntries: [] };
 
   zip.file('word/document.xml', processedXml);
-  const newBuffer = Buffer.from(await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' }));
+  // STORE (không nén) thay DEFLATE — nhanh hơn ~200ms, buffer chỉ dùng nội bộ cho mammoth
+  const newBuffer = Buffer.from(await zip.generateAsync({ type: 'nodebuffer', compression: 'STORE' }));
   return { buffer: newBuffer, mathEntries };
 }
 

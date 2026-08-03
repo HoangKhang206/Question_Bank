@@ -2,19 +2,23 @@
 import type { Question, QuestionOption } from '@/lib/types';
 import katex from 'katex';
 
+function decodeHtmlEntities(s: string): string {
+  return s.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"');
+}
+
 function applyKatex(html: string): string {
   if (!html.includes('math-inline') && !html.includes('math-display')) return html;
   return html
     .replace(/<span class="math-display">\$\$([\s\S]*?)\$\$<\/span>/g, (_, formula) => {
       try {
-        return katex.renderToString(formula.trim(), { throwOnError: false, displayMode: true });
+        return katex.renderToString(decodeHtmlEntities(formula.trim()), { throwOnError: false, displayMode: true });
       } catch {
         return `<code>${formula}</code>`;
       }
     })
     .replace(/<span class="math-inline">\$([\s\S]*?)\$<\/span>/g, (_, formula) => {
       try {
-        return katex.renderToString(formula.trim(), { throwOnError: false, displayMode: false });
+        return katex.renderToString(decodeHtmlEntities(formula.trim()), { throwOnError: false, displayMode: false });
       } catch {
         return `<code>${formula}</code>`;
       }

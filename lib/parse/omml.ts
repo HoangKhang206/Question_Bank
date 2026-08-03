@@ -15,14 +15,6 @@ function unescXml(s: string): string {
     .replace(/&apos;/g, "'");
 }
 
-// Inner content helper: extract content between first > and last </
-function inner(s: string, tag: string): string {
-  const open = s.indexOf('>');
-  const close = s.lastIndexOf(`</${tag}`);
-  if (open < 0 || close < 0) return s;
-  return s.slice(open + 1, close).trim();
-}
-
 // Apply a single transform pass, returns new string
 function applyPass(s: string): string {
   // 1. Normalize self-closing m: tags

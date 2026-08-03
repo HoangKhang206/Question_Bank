@@ -1,6 +1,9 @@
 import { NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase/server';
 
+export const runtime = 'nodejs';
+export const maxDuration = 10;
+
 export async function POST(req: Request) {
   try {
     const { name, config, question_ids, notes } = await req.json();

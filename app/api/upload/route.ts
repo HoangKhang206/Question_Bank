@@ -16,8 +16,6 @@ export const runtime = 'nodejs';
 export const maxDuration = 10;
 
 export async function POST(req: Request) {
-  console.log('[UPLOAD] SUPABASE_URL:', process.env.SUPABASE_URL?.slice(0, 30));
-  console.log('[UPLOAD] GEMINI_API_KEY:', process.env.GEMINI_API_KEY ? 'set' : 'MISSING');
   try {
     const form = await req.formData();
     const file = form.get('file') as File | null;

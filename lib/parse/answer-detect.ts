@@ -25,18 +25,18 @@ function hasUnderlineAnswers(html: string): boolean {
 }
 
 /**
- * Heuristic: nếu docx XML có <w:color w:val="..."> (không phải 000000/auto) ≥ 3 lần
- * trong các run gần chữ A/B/C/D → color mode.
+ * Detect + extract color answers trong một lần JSZip load.
+ * Trả về null nếu không phát hiện color format, trả về Map nếu có.
  */
-async function hasColorAnswers(buffer: Buffer): Promise<boolean> {
+async function extractColorAnswersIfPresent(buffer: Buffer): Promise<Map<number, string> | null> {
   try {
     const zip = await JSZip.loadAsync(buffer);
     const docXml = await zip.file('word/document.xml')?.async('string');
-    if (!docXml) return false;
+    if (!docXml) return null;
 
-    // Tìm các <w:r> có w:color (không phải 000000/auto) và chứa text A/B/C/D
+    // Quick check: đủ số colored runs chứa A/B/C/D không?
     const runs = Array.from(docXml.matchAll(/<w:r[ >][\s\S]*?<\/w:r>/g));
-    let hits = 0;
+    let quickHits = 0;
     for (const r of runs) {
       const run = r[0];
       const colorM = run.match(/<w:color\s+w:val="([^"]+)"/);
@@ -45,11 +45,48 @@ async function hasColorAnswers(buffer: Buffer): Promise<boolean> {
       if (val === '000000' || val === 'auto') continue;
       const textM = run.match(/<w:t[^>]*>([^<]*)<\/w:t>/);
       if (!textM) continue;
-      if (/\b[ABCD]\b/.test(textM[1])) hits++;
+      if (/\b[ABCD]\b/.test(textM[1])) quickHits++;
     }
-    return hits >= 3;
-  } catch {
-    return false;
+    if (quickHits < 3) return null;
+
+    // Đủ signal → extract theo paragraph
+    const map = new Map<number, string>();
+    const paragraphs = Array.from(docXml.matchAll(/<w:p[ >][\s\S]*?<\/w:p>/g));
+
+    const getText = (p: string) =>
+      Array.from(p.matchAll(/<w:t[^>]*>([^<]*)<\/w:t>/g)).map(m => m[1]).join('');
+
+    const getColoredAnswer = (p: string): string | null => {
+      for (const runM of p.matchAll(/<w:r\b[\s\S]*?<\/w:r>/g)) {
+        const run = runM[0];
+        if (!/<w:color/.test(run)) continue;
+        const colorM = run.match(/<w:color\s+w:val="([^"]+)"/);
+        if (!colorM || colorM[1] === '000000' || colorM[1].toLowerCase() === 'auto') continue;
+        const textM = run.match(/<w:t[^>]*>([^<]*)<\/w:t>/);
+        if (!textM) continue;
+        const t = textM[1].trim();
+        if (/^[ABCD][.)]?\s*$/.test(t)) return t[0];
+        const inside = t.match(/\b([ABCD])\b/);
+        if (inside) return inside[1];
+      }
+      return null;
+    };
+
+    let currentNum: number | null = null;
+    for (const pm of paragraphs) {
+      const p = pm[0];
+      const txt = getText(p);
+      const cauM = txt.match(/^(?:Câu\s+)?(\d+)\s*[.):]/);
+      if (cauM) currentNum = parseInt(cauM[1], 10);
+      if (currentNum !== null && !map.has(currentNum)) {
+        const ans = getColoredAnswer(p);
+        if (ans) map.set(currentNum, ans);
+      }
+    }
+    return map.size >= 3 ? map : null;
+  } catch (e) {
+    console.warn('[answer-detect] color extraction failed:', e);
+    return null;
   }
 }
 
@@ -98,67 +135,6 @@ export function extractAnswersFromUnderline(html: string): Map<number, string> {
     }
   }
 
-  return map;
-}
-
-/**
- * Color extractor: đọc word/document.xml, tìm paragraph chứa "Câu N"
- * rồi tìm run có màu chứa A/B/C/D.
- */
-export async function extractAnswersFromColor(buffer: Buffer): Promise<Map<number, string>> {
-  const map = new Map<number, string>();
-  try {
-    const zip = await JSZip.loadAsync(buffer);
-    const docXml = await zip.file('word/document.xml')?.async('string');
-    if (!docXml) return map;
-
-    // Tách thành các paragraph <w:p>...</w:p>
-    const paragraphs = Array.from(docXml.matchAll(/<w:p[ >][\s\S]*?<\/w:p>/g));
-
-    // Helper: lấy text thuần của paragraph
-    const getText = (p: string) =>
-      Array.from(p.matchAll(/<w:t[^>]*>([^<]*)<\/w:t>/g))
-        .map(m => m[1])
-        .join('');
-
-    // Helper: kiểm tra paragraph có colored run chứa chữ A/B/C/D
-    const getColoredAnswer = (p: string): string | null => {
-      // Tìm runs có w:color khác 000000/auto
-      const runPattern = /<w:r\b[\s\S]*?<\/w:r>/g;
-      for (const runM of p.matchAll(runPattern)) {
-        const run = runM[0];
-        if (!/<w:color/.test(run)) continue;
-        const colorM = run.match(/<w:color\s+w:val="([^"]+)"/);
-        if (!colorM || colorM[1] === '000000' || colorM[1].toLowerCase() === 'auto') continue;
-        const textM = run.match(/<w:t[^>]*>([^<]*)<\/w:t>/);
-        if (!textM) continue;
-        const t = textM[1].trim();
-        if (/^[ABCD][.)]?\s*$/.test(t)) return t[0];
-        const inside = t.match(/\b([ABCD])\b/);
-        if (inside) return inside[1];
-      }
-      return null;
-    };
-
-    let currentNum: number | null = null;
-    for (const pm of paragraphs) {
-      const p = pm[0];
-      const txt = getText(p);
-
-      // Detect "Câu N" header
-      const cauM = txt.match(/^(?:Câu\s+)?(\d+)\s*[.):]/);
-      if (cauM) {
-        currentNum = parseInt(cauM[1], 10);
-      }
-
-      if (currentNum !== null && !map.has(currentNum)) {
-        const ans = getColoredAnswer(p);
-        if (ans) map.set(currentNum, ans);
-      }
-    }
-  } catch (e) {
-    console.warn('[answer-detect] color extraction failed:', e);
-  }
   return map;
 }
 
@@ -218,12 +194,12 @@ export async function extractAnswersAuto(
     }
   }
 
-  // 2. Color (docx XML — cần buffer)
-  if (buffer && await hasColorAnswers(buffer)) {
-    const answers = await extractAnswersFromColor(buffer);
-    if (answers.size >= 3) {
-      console.log(`[answer-detect] format=color, ${answers.size} đáp án`);
-      return { format: 'color', answers };
+  // 2. Color (docx XML — cần buffer, single JSZip load)
+  if (buffer) {
+    const colorAnswers = await extractColorAnswersIfPresent(buffer);
+    if (colorAnswers) {
+      console.log(`[answer-detect] format=color, ${colorAnswers.size} đáp án`);
+      return { format: 'color', answers: colorAnswers };
     }
   }
 

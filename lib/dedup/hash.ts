@@ -18,7 +18,7 @@ export function normalizeForHash(text: string): string {
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')            // xoá dấu combining
     .replace(/đ/g, 'd')                          // xử lý đ riêng (không có trong NFD)
-    .replace(/^(?:câu\s+)?\d+\s*[.):]?\s*/i, '') // bỏ marker đầu
+    .replace(/^(?:cau\s+)?\d+\s*[.):]?\s*/i, '') // bỏ marker đầu (sau normalize diacritics)
     .replace(/\s+/g, ' ')
     .trim();
 }
