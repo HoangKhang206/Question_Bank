@@ -680,6 +680,7 @@ interface SourceFile {
 function SourceFilesPanel({ chapterId, refreshKey, onDeleted }: { chapterId: string; refreshKey: number; onDeleted: () => void }) {
   const [files, setFiles] = useState<SourceFile[]>([]);
   const [modal, setModal] = useState<SourceFile | null>(null);
+  const [cascade, setCascade] = useState(true);
   const [deleting, setDeleting] = useState(false);
   const [modalError, setModalError] = useState('');
 
@@ -705,7 +706,7 @@ function SourceFilesPanel({ chapterId, refreshKey, onDeleted }: { chapterId: str
     if (!modal) return;
     setDeleting(true);
     setModalError('');
-    const res = await fetch(`/api/source-files/${modal.id}?cascade=false`, { method: 'DELETE' });
+    const res = await fetch(`/api/source-files/${modal.id}?cascade=${cascade}`, { method: 'DELETE' });
     const j = await res.json().catch(() => ({}));
     setDeleting(false);
     if (!res.ok) { setModalError(j.error ?? 'Xoá thất bại'); return; }
@@ -730,7 +731,22 @@ function SourceFilesPanel({ chapterId, refreshKey, onDeleted }: { chapterId: str
           <div className="bg-white rounded-xl shadow-xl p-6 w-full max-w-sm mx-4">
             <p className="font-semibold text-gray-900 mb-2">Xoá file này?</p>
             <p className="text-sm font-medium text-gray-800 break-all mb-0.5">{modal.filename}</p>
-            <p className="text-xs text-gray-400 mb-5">{modal.questions[0]?.count ?? 0} câu đã trích — các câu hỏi vẫn được giữ trong ngân hàng</p>
+            <p className="text-xs text-gray-400 mb-4">{modal.questions[0]?.count ?? 0} câu đã trích xuất từ file này</p>
+
+            <label className="flex items-start gap-2.5 mb-5 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={cascade}
+                onChange={(e) => setCascade(e.target.checked)}
+                className="mt-0.5 shrink-0"
+              />
+              <span className="text-sm text-gray-700">
+                Xoá luôn các câu hỏi đi kèm
+                <span className="block text-xs text-gray-400 mt-0.5">
+                  Bỏ tick để giữ câu hỏi trong ngân hàng sau khi xoá file
+                </span>
+              </span>
+            </label>
 
             {modalError && <p className="text-xs text-red-600 mb-3">{modalError}</p>}
 
@@ -768,7 +784,7 @@ function SourceFilesPanel({ chapterId, refreshKey, onDeleted }: { chapterId: str
                 <div className="flex gap-2 mt-1">
                   <a href={`/source-files/${f.id}`} className="text-blue-600 hover:underline text-xs">Xem</a>
                   <button
-                    onClick={() => { setModalError(''); setModal(f); }}
+                    onClick={() => { setModalError(''); setCascade(true); setModal(f); }}
                     className="text-red-500 hover:underline text-xs"
                   >
                     Xoá
