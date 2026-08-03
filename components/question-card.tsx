@@ -1,5 +1,25 @@
 // Shared component — hiển thị 1 câu hỏi với form phù hợp từng loại câu
 import type { Question, QuestionOption } from '@/lib/types';
+import katex from 'katex';
+
+function applyKatex(html: string): string {
+  if (!html.includes('math-inline') && !html.includes('math-display')) return html;
+  return html
+    .replace(/<span class="math-display">\$\$([\s\S]*?)\$\$<\/span>/g, (_, formula) => {
+      try {
+        return katex.renderToString(formula.trim(), { throwOnError: false, displayMode: true });
+      } catch {
+        return `<code>${formula}</code>`;
+      }
+    })
+    .replace(/<span class="math-inline">\$([\s\S]*?)\$<\/span>/g, (_, formula) => {
+      try {
+        return katex.renderToString(formula.trim(), { throwOnError: false, displayMode: false });
+      } catch {
+        return `<code>${formula}</code>`;
+      }
+    });
+}
 
 const TYPE_LABEL: Record<string, string> = {
   multiple_choice: 'Trắc nghiệm',
@@ -138,7 +158,7 @@ export default function QuestionCard({ q, index }: Props) {
               [&_table]:border-collapse [&_table]:w-full [&_table]:my-2 [&_table]:text-sm
               [&_td]:border [&_td]:border-gray-300 [&_td]:px-2 [&_td]:py-1
               [&_th]:border [&_th]:border-gray-300 [&_th]:px-2 [&_th]:py-1 [&_th]:bg-gray-50 [&_th]:font-medium"
-            dangerouslySetInnerHTML={{ __html: q.content }}
+            dangerouslySetInnerHTML={{ __html: applyKatex(q.content) }}
           />
         </>
       ) : (
