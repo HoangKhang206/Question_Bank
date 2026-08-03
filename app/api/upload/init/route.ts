@@ -1,14 +1,14 @@
-// SP1 (Chunked): Parse docx, detect answers, return full_text + source_file_id
+// SP1 (Chunked Init): Parse docx WITH ảnh/bảng, lưu HTML lên Storage, trả source_file_id
 // Input : FormData { file (.docx), chapter_id, structure, overwrite, auto_answer }
-// Output: { source_file_id, full_text, total_questions_detected, precomputed_answers }
-// Constraint: ≤10s, no SP2/SP3/SP4. Skip image embedding for speed.
+// Output: { source_file_id, total_questions_detected, precomputed_answers }
+// Constraint: ≤10s. Không chạy SP2/SP3/SP4.
+// HTML lưu tại sources/${chapterId}/${fileHash}.html để các chunk download về xử lý.
 
 import { NextResponse } from 'next/server';
-import mammoth from 'mammoth';
 import { supabaseAdmin } from '@/lib/supabase/server';
+import { parseDocx } from '@/lib/parse/docx';
 import { extractAnswersAuto } from '@/lib/parse/answer-detect';
 import { computeFileHash } from '@/lib/dedup/hash';
-import { htmlToText } from '@/lib/parse/docx';
 import type { QuestionRange } from '@/lib/types';
 
 export const runtime = 'nodejs';
@@ -49,6 +49,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'FILE_EXISTS', existing_id: existing.id }, { status: 409 });
     }
 
+    // Upload docx lên Storage
     const ext = file.name.split('.').pop() ?? 'bin';
     const storagePath = `sources/${chapterId}/${fileHash}.${ext}`;
     const { error: upErr } = await sb.storage
@@ -56,6 +57,20 @@ export async function POST(req: Request) {
       .upload(storagePath, buffer, { upsert: true, contentType: file.type });
     if (upErr) throw new Error(`Storage upload: ${upErr.message}`);
 
+    // SP1: Parse docx WITH ảnh/bảng (base64 inline)
+    const { html, text } = await parseDocx(buffer);
+
+    // Lưu HTML lên Storage để các chunk sau download về — tránh round-trip client
+    const htmlPath = storagePath.replace(/\.[^.]+$/, '.html');
+    const { error: htmlUpErr } = await sb.storage
+      .from('sources')
+      .upload(htmlPath, Buffer.from(html, 'utf-8'), {
+        upsert: true,
+        contentType: 'text/html; charset=utf-8',
+      });
+    if (htmlUpErr) throw new Error(`HTML Storage upload: ${htmlUpErr.message}`);
+
+    // Tạo record source_files
     const { data: sourceRow, error: srcErr } = await sb
       .from('source_files')
       .upsert(
@@ -75,13 +90,9 @@ export async function POST(req: Request) {
       .single();
     if (srcErr) throw new Error(`Insert source_files: ${srcErr.message}`);
 
-    // SP1: Parse docx → text only, no image embedding (speed > fidelity for large files)
-    const { value: html } = await mammoth.convertToHtml({ buffer });
-    const text = htmlToText(html);
-
-    // Answer detection (non-AI).
-    // autoAnswer=true: skip color XML scan (slow on large files), rely on underline+text.
-    // autoAnswer=false: run full detection including color.
+    // Detect đáp án (non-AI).
+    // autoAnswer=true → bỏ qua color scan (chậm trên file lớn), dùng underline+text.
+    // autoAnswer=false → scan đầy đủ kể cả color XML.
     const precomputedAnswers: Record<string, string> = {};
     const detected = await extractAnswersAuto(autoAnswer ? null : buffer, html, text);
     if (detected.format !== 'none') {
@@ -92,12 +103,12 @@ export async function POST(req: Request) {
 
     console.log(
       `[UPLOAD/INIT] ${file.name}: ${total_questions_detected} câu, ` +
-      `${Object.keys(precomputedAnswers).length} đáp án detect được`
+      `${Object.keys(precomputedAnswers).length} đáp án detect được, ` +
+      `html=${(html.length / 1024).toFixed(0)}KB`
     );
 
     return NextResponse.json({
       source_file_id: sourceRow.id,
-      full_text: text,
       total_questions_detected,
       precomputed_answers: precomputedAnswers,
     });

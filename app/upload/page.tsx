@@ -12,38 +12,22 @@ interface UploadResult {
 }
 
 interface ChunkProgress {
-  current: number;  // chunks completed so far
+  current: number; // chunks hoàn thành
   total: number;
   inserted: number;
   skipped_duplicate: number;
   unclassified: number;
-  eta: number | null; // seconds remaining
+  eta: number | null; // giây còn lại
 }
 
 interface ChunkedCtx {
-  chunks: string[];
+  total_chunks: number;
   source_file_id: string;
   precomputed_answers: Record<string, string>;
 }
 
 const CHUNK_SIZE = 40;
 const LARGE_FILE_THRESHOLD = 2 * 1024 * 1024; // 2MB
-const QUESTION_MARKER_RE = /^(?:Câu\s+)?(\d+)\s*[.):]/gm;
-
-function splitText(text: string): string[] {
-  const indices: number[] = [];
-  for (const m of text.matchAll(QUESTION_MARKER_RE)) {
-    indices.push(m.index!);
-  }
-  if (indices.length === 0) return [text];
-  const chunks: string[] = [];
-  for (let i = 0; i < indices.length; i += CHUNK_SIZE) {
-    const start = indices[i];
-    const end = indices[i + CHUNK_SIZE] ?? text.length;
-    chunks.push(text.slice(start, end));
-  }
-  return chunks;
-}
 
 function UploadInner() {
   const params = useSearchParams();
@@ -71,7 +55,7 @@ function UploadInner() {
 
   const ACCEPT = '.docx,.pdf';
 
-  // Warn before closing tab while uploading
+  // Cảnh báo khi đóng tab trong lúc upload
   useEffect(() => {
     if (!loading) return;
     const handler = (e: BeforeUnloadEvent) => { e.preventDefault(); };
@@ -108,36 +92,35 @@ function UploadInner() {
     setDragging(true);
   }, []);
 
-  // ─── Chunked upload helpers ────────────────────────────────────────────────
+  // ─── Chunked upload ────────────────────────────────────────────────────────
 
   async function runChunks(ctx: ChunkedCtx, startFrom: number) {
-    const { chunks, source_file_id, precomputed_answers } = ctx;
-    const totalChunks = chunks.length;
+    const { total_chunks, source_file_id, precomputed_answers } = ctx;
     const hasPrecomputed = Object.keys(precomputed_answers).length > 0;
     const structure = autoType
       ? [{ from: 1, to: 9999, type: 'multiple_choice' as const }]
       : ranges;
 
-    for (let i = startFrom; i < totalChunks; i++) {
+    for (let i = startFrom; i < total_chunks; i++) {
       if (cancelRef.current) break;
 
       setChunkProgress({
         current: i,
-        total: totalChunks,
+        total: total_chunks,
         inserted: accRef.current.inserted,
         skipped_duplicate: accRef.current.skipped,
         unclassified: accRef.current.unclassified,
         eta: null,
       });
 
+      // Server tự download HTML từ Storage và cắt phần câu của chunk này
       const chunkRes = await fetch('/api/upload/chunk', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           source_file_id,
           chunk_index: i,
-          total_chunks: totalChunks,
-          chunk_text: chunks[i],
+          total_chunks,
           chunk_ranges: structure,
           precomputed_answers,
           auto_type: autoType,
@@ -147,7 +130,7 @@ function UploadInner() {
 
       if (!chunkRes.ok) {
         const errData = await chunkRes.json().catch(() => ({})) as { error?: string };
-        setErr(`Chunk ${i + 1}/${totalChunks} thất bại: ${errData.error ?? 'Lỗi không xác định'}`);
+        setErr(`Chunk ${i + 1}/${total_chunks} thất bại: ${errData.error ?? 'Lỗi không xác định'}`);
         setFailedChunk(i);
         setLoading(false);
         return;
@@ -161,12 +144,12 @@ function UploadInner() {
       const elapsed = Date.now() - sessionStartRef.current;
       const done = i - startFrom + 1;
       const avgMs = elapsed / done;
-      const remainMs = avgMs * (totalChunks - i - 1);
+      const remainMs = avgMs * (total_chunks - i - 1);
       const eta = remainMs > 1000 ? Math.ceil(remainMs / 1000) : null;
 
       setChunkProgress({
         current: i + 1,
-        total: totalChunks,
+        total: total_chunks,
         inserted: accRef.current.inserted,
         skipped_duplicate: accRef.current.skipped,
         unclassified: accRef.current.unclassified,
@@ -207,7 +190,7 @@ function UploadInner() {
     const initData = await initRes.json() as {
       error?: string;
       source_file_id?: string;
-      full_text?: string;
+      total_questions_detected?: number;
       precomputed_answers?: Record<string, string>;
     };
 
@@ -222,19 +205,19 @@ function UploadInner() {
       return;
     }
 
-    const { source_file_id, full_text, precomputed_answers } = initData as {
+    const { source_file_id, total_questions_detected, precomputed_answers } = initData as {
       source_file_id: string;
-      full_text: string;
+      total_questions_detected: number;
       precomputed_answers: Record<string, string>;
     };
 
-    const chunks = splitText(full_text);
-    const ctx: ChunkedCtx = { chunks, source_file_id, precomputed_answers };
+    const total_chunks = Math.max(1, Math.ceil(total_questions_detected / CHUNK_SIZE));
+    const ctx: ChunkedCtx = { total_chunks, source_file_id, precomputed_answers };
     chunkedCtxRef.current = ctx;
 
     setChunkProgress({
       current: 0,
-      total: chunks.length,
+      total: total_chunks,
       inserted: 0,
       skipped_duplicate: 0,
       unclassified: 0,
@@ -337,12 +320,12 @@ function UploadInner() {
         ) : (
           <div>
             <p className="text-gray-500 text-sm mb-1">Kéo file vào đây hoặc nhấn để chọn</p>
-            <p className="text-xs text-gray-400">.docx · .pdf (copy được)</p>
+            <p className="text-xs text-gray-400">.docx · .pdf (copy được) · tối đa 4 MB</p>
           </div>
         )}
       </div>
 
-      {/* AI options */}
+      {/* Tuỳ chọn AI */}
       <div className="bg-gray-50 border rounded-lg p-4 mb-5">
         <p className="text-sm font-semibold mb-3">Tuỳ chọn AI</p>
         <label className="flex items-start gap-3 text-sm cursor-pointer mb-3">
@@ -369,7 +352,7 @@ function UploadInner() {
           <div>
             <p className="font-medium">Tự tìm / sinh đáp án</p>
             <p className="text-xs text-gray-500">
-              AI đọc file tìm đáp án sẵn có; nếu không có thì tự sinh. Bỏ tick để dùng detect
+              AI tìm đáp án sẵn có trong file; nếu không có thì tự sinh. Bỏ tick để dùng detect
               nhanh (không tốn AI call)
             </p>
           </div>
@@ -384,8 +367,8 @@ function UploadInner() {
           <div>
             <p className="font-medium">Chế độ file lớn</p>
             <p className="text-xs text-gray-500">
-              Tách thành từng batch {CHUNK_SIZE} câu để xử lý file có 100+ câu. Tự bật khi file
-              &gt; 2 MB. Ảnh và bảng trong câu hỏi sẽ không được giữ lại.
+              Tách thành từng batch {CHUNK_SIZE} câu để xử lý file 100+ câu. Tự bật khi file
+              &gt; 2 MB. Ảnh và bảng vẫn được giữ nguyên.
             </p>
           </div>
         </label>
@@ -440,7 +423,7 @@ function UploadInner() {
         </div>
       )}
 
-      {/* Error */}
+      {/* Lỗi */}
       {err && (
         <div className="flex items-center gap-3 text-red-600 text-sm mb-4">
           <span>{err}</span>
@@ -455,7 +438,7 @@ function UploadInner() {
         </div>
       )}
 
-      {/* Chunked progress */}
+      {/* Tiến trình chunked */}
       {chunkProgress && loading && (
         <div className="mb-4 bg-blue-50 border border-blue-200 rounded-lg p-4">
           <div className="flex justify-between items-center text-sm mb-2">
@@ -514,15 +497,9 @@ function UploadInner() {
         <div className="mt-5 p-4 bg-green-50 border border-green-200 rounded-lg text-sm">
           <p className="font-semibold text-green-800 mb-1">Hoàn thành</p>
           <div className="flex gap-4 text-green-700">
-            <span>
-              Đã thêm: <b>{result.inserted}</b>
-            </span>
-            <span>
-              Trùng bỏ qua: <b>{result.skipped_duplicate}</b>
-            </span>
-            <span>
-              Chưa phân loại: <b>{result.unclassified}</b>
-            </span>
+            <span>Đã thêm: <b>{result.inserted}</b></span>
+            <span>Trùng bỏ qua: <b>{result.skipped_duplicate}</b></span>
+            <span>Chưa phân loại: <b>{result.unclassified}</b></span>
           </div>
           <a href="/chapters" className="mt-2 inline-block text-blue-600 hover:underline">
             Xem trong Bank →
