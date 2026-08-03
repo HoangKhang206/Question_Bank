@@ -145,7 +145,7 @@ function plainToRuns(
     if (part.startsWith('$$') && part.endsWith('$$')) {
       const latex = part.slice(2, -2).trim();
       if (latex) {
-        const ph = `__DMATH_${mathEntries.length}__`;
+        const ph = `__MATH_${mathEntries.length}__`;
         mathEntries.push({ placeholder: ph, latex, display: false });
         runs.push(txt(ph, opts));
       }
@@ -269,12 +269,12 @@ function htmlToDocxBlocks(
       for (const line of text.split('\n')) {
         const t = line.trim();
         if (!t) continue;
-        const runs = textToRuns(t);
         if (!usedLead && leadRun) {
-          result.push(para([leadRun, ...runs]));
+          // strip "Câu N." prefix vì leadRun đã thêm lại rồi
+          result.push(para([leadRun, ...textToRuns(stripQNum(t))]));
           usedLead = true;
         } else {
-          result.push(para(runs));
+          result.push(para(textToRuns(t)));
         }
       }
     }
@@ -423,27 +423,37 @@ export async function generateExamDocx(
       if (t === 'multiple_choice') {
         const opts = q.options ?? [];
         const isAns = (key: string) => variant === 'with_answer' && key === q.answer;
-        const layout = optionLayout(opts);
-        if (layout === 4) {
-          opts.forEach((o) => {
-            children.push(para([
-              txt(`${o.key}.`, { bold: true, underline: isAns(o.key) ? { type: UnderlineType.SINGLE } : undefined }),
-              ...plainToRuns(` ${o.text}`, mathEntries),
-            ], { indent: { left: 720 } }));
-          });
-        } else if (layout === 2) {
-          const pairs = [[opts[0], opts[1]], [opts[2], opts[3]]];
-          for (const pair of pairs) {
-            children.push(new Table({
-              width: { size: 100, type: WidthType.PERCENTAGE }, borders: NO_BORDERS,
-              rows: [new TableRow({ children: pair.filter(Boolean).map((o) => makeOptionCell(o, isAns(o.key), 50, mathEntries)) })],
-            }));
+        if (opts.length === 0) {
+          // Không có options trong DB — hiện đáp án dạng text nếu có
+          if (variant === 'with_answer' && q.answer) {
+            children.push(para(
+              [txt('Đáp án: ', { bold: true, color: '1a56db' }), ...plainToRuns(q.answer, mathEntries, { bold: true, color: '1a56db' })],
+              { indent: { left: 720 } }
+            ));
           }
         } else {
-          children.push(new Table({
-            width: { size: 100, type: WidthType.PERCENTAGE }, borders: NO_BORDERS,
-            rows: [new TableRow({ children: opts.map((o) => makeOptionCell(o, isAns(o.key), 25, mathEntries)) })],
-          }));
+          const layout = optionLayout(opts);
+          if (layout === 4) {
+            opts.forEach((o) => {
+              children.push(para([
+                txt(`${o.key}.`, { bold: true, underline: isAns(o.key) ? { type: UnderlineType.SINGLE } : undefined }),
+                ...plainToRuns(` ${o.text}`, mathEntries),
+              ], { indent: { left: 720 } }));
+            });
+          } else if (layout === 2) {
+            const pairs = [[opts[0], opts[1]], [opts[2], opts[3]]];
+            for (const pair of pairs) {
+              children.push(new Table({
+                width: { size: 100, type: WidthType.PERCENTAGE }, borders: NO_BORDERS,
+                rows: [new TableRow({ children: pair.filter(Boolean).map((o) => makeOptionCell(o, isAns(o.key), 50, mathEntries)) })],
+              }));
+            }
+          } else {
+            children.push(new Table({
+              width: { size: 100, type: WidthType.PERCENTAGE }, borders: NO_BORDERS,
+              rows: [new TableRow({ children: opts.map((o) => makeOptionCell(o, isAns(o.key), 25, mathEntries)) })],
+            }));
+          }
         }
       } else if (t === 'true_false') {
         const answerMap = parseTrueFalse(q.answer);
