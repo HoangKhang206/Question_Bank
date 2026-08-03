@@ -37,13 +37,18 @@ function optionLayout(opts: QuestionOption[]): 1 | 2 | 4 {
   return 4;
 }
 
-function makeOptionCell(o: QuestionOption, isAnswer: boolean, widthPct: number): TableCell {
+function makeOptionCell(
+  o: QuestionOption,
+  isAnswer: boolean,
+  widthPct: number,
+  mathEntries: ExportMathEntry[]
+): TableCell {
   return new TableCell({
     borders: { top: NO_BORDER, bottom: NO_BORDER, left: NO_BORDER, right: NO_BORDER },
     width: { size: widthPct, type: WidthType.PERCENTAGE },
     children: [para([
       txt(`${o.key}.`, { bold: true, underline: isAnswer ? { type: UnderlineType.SINGLE } : undefined }),
-      txt(` ${o.text}`),
+      ...plainToRuns(` ${o.text}`, mathEntries),
     ])],
   });
 }
@@ -116,6 +121,46 @@ const PLACEHOLDER_RE = /(__D?MATH_\d+__)/g;
 function textToRuns(text: string, baseOpts: ConstructorParameters<typeof TextRun>[0] = {}): TextRun[] {
   const opts = typeof baseOpts === 'string' ? {} : baseOpts;
   return text.split(PLACEHOLDER_RE).filter(Boolean).map((part) => txt(part, opts));
+}
+
+// Convert plain text (có thể chứa $...$) → TextRun[], math → placeholder cho OMML
+// Dùng cho q.answer (short_answer/essay), q.explanation, o.text (options)
+function plainToRuns(
+  text: string,
+  mathEntries: ExportMathEntry[],
+  opts: ConstructorParameters<typeof TextRun>[0] = {}
+): TextRun[] {
+  if (!text) return [];
+  // HTML content → extract math spans
+  if (text.includes('math-inline') || text.includes('math-display')) {
+    const processed = extractMathSpans(text, mathEntries);
+    return textToRuns(htmlToPlain(processed), opts);
+  }
+  // Plain text with $...$ LaTeX notation
+  if (!text.includes('$')) return [txt(text, opts)];
+  const parts = text.split(/(\$\$[\s\S]*?\$\$|\$[^$\n]+\$)/g);
+  const runs: TextRun[] = [];
+  for (const part of parts) {
+    if (!part) continue;
+    if (part.startsWith('$$') && part.endsWith('$$')) {
+      const latex = part.slice(2, -2).trim();
+      if (latex) {
+        const ph = `__DMATH_${mathEntries.length}__`;
+        mathEntries.push({ placeholder: ph, latex, display: false });
+        runs.push(txt(ph, opts));
+      }
+    } else if (part.startsWith('$') && part.endsWith('$')) {
+      const latex = part.slice(1, -1).trim();
+      if (latex) {
+        const ph = `__MATH_${mathEntries.length}__`;
+        mathEntries.push({ placeholder: ph, latex, display: false });
+        runs.push(txt(ph, opts));
+      }
+    } else {
+      runs.push(txt(part, opts));
+    }
+  }
+  return runs;
 }
 
 // ── Image helpers ─────────────────────────────────────────────────────────────
@@ -383,7 +428,7 @@ export async function generateExamDocx(
           opts.forEach((o) => {
             children.push(para([
               txt(`${o.key}.`, { bold: true, underline: isAns(o.key) ? { type: UnderlineType.SINGLE } : undefined }),
-              txt(` ${o.text}`),
+              ...plainToRuns(` ${o.text}`, mathEntries),
             ], { indent: { left: 720 } }));
           });
         } else if (layout === 2) {
@@ -391,13 +436,13 @@ export async function generateExamDocx(
           for (const pair of pairs) {
             children.push(new Table({
               width: { size: 100, type: WidthType.PERCENTAGE }, borders: NO_BORDERS,
-              rows: [new TableRow({ children: pair.filter(Boolean).map((o) => makeOptionCell(o, isAns(o.key), 50)) })],
+              rows: [new TableRow({ children: pair.filter(Boolean).map((o) => makeOptionCell(o, isAns(o.key), 50, mathEntries)) })],
             }));
           }
         } else {
           children.push(new Table({
             width: { size: 100, type: WidthType.PERCENTAGE }, borders: NO_BORDERS,
-            rows: [new TableRow({ children: opts.map((o) => makeOptionCell(o, isAns(o.key), 25)) })],
+            rows: [new TableRow({ children: opts.map((o) => makeOptionCell(o, isAns(o.key), 25, mathEntries)) })],
           }));
         }
       } else if (t === 'true_false') {
@@ -409,13 +454,13 @@ export async function generateExamDocx(
           const isCorrect = variant === 'with_answer' && answerMap[o.key] === 'Đúng';
           children.push(para([
             txt(o.key, { bold: true, underline: isCorrect ? { type: UnderlineType.SINGLE } : undefined }),
-            txt(`) ${o.text}`),
+            ...plainToRuns(`) ${o.text}`, mathEntries),
           ], { indent: { left: 720 } }));
         });
       } else if (t === 'short_answer') {
         if (variant === 'with_answer' && q.answer) {
           children.push(para(
-            [txt(`Đáp án: ${q.answer}`, { italics: true, bold: true, color: '1a56db' })],
+            [txt('Đáp án: ', { italics: true, bold: true, color: '1a56db' }), ...plainToRuns(q.answer, mathEntries, { italics: true, bold: true, color: '1a56db' })],
             { indent: { left: 720 }, spacing: { before: 60 } }
           ));
         } else {
@@ -424,7 +469,7 @@ export async function generateExamDocx(
       } else if (t === 'essay') {
         if (variant === 'with_answer' && q.answer) {
           children.push(para(
-            [txt(`Gợi ý: ${q.answer}`, { italics: true, color: '1a56db' })],
+            [txt('Gợi ý: ', { italics: true, color: '1a56db' }), ...plainToRuns(q.answer, mathEntries, { italics: true, color: '1a56db' })],
             { indent: { left: 720 }, spacing: { before: 60 } }
           ));
         }
@@ -432,7 +477,7 @@ export async function generateExamDocx(
 
       if (variant === 'with_answer' && q.explanation) {
         children.push(para(
-          [txt('Lời giải: ', { bold: true, italics: true }), txt(q.explanation, { italics: true })],
+          [txt('Lời giải: ', { bold: true, italics: true }), ...plainToRuns(q.explanation, mathEntries, { italics: true })],
           { indent: { left: 720 }, spacing: { before: 60 } }
         ));
       }
