@@ -319,6 +319,36 @@ export default function ChapterView({ chapters: initialChapters }: { chapters: C
   );
 }
 
+// ─── ContentHints ─────────────────────────────────────────────────────────────
+
+function extractFirstImgSrc(html: string): string | null {
+  const m = html.match(/src="([^"]+)"/i);
+  return m ? m[1] : null;
+}
+
+function ContentHints({ content }: { content: string }) {
+  const imgSrc = extractFirstImgSrc(content);
+  const hasTable = content.includes('<table');
+  if (!imgSrc && !hasTable) return null;
+  return (
+    <div className="flex gap-2 items-center mt-1.5 flex-wrap">
+      {imgSrc && (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          src={imgSrc}
+          alt=""
+          className="max-h-16 w-auto rounded border border-gray-200 object-contain bg-white"
+        />
+      )}
+      {hasTable && (
+        <span className="text-xs px-1.5 py-0.5 bg-gray-100 text-gray-500 rounded border border-gray-200">
+          Có bảng
+        </span>
+      )}
+    </div>
+  );
+}
+
 // ─── QuestionItem ────────────────────────────────────────────────────────────
 
 const DIFF_COLOR: Record<string, string> = {
@@ -439,6 +469,7 @@ function QuestionItem({
                 : q.content
               ).slice(0, 200)}
             </p>
+            {q.content.trimStart().startsWith('<') && <ContentHints content={q.content} />}
             <AnswerDisplay q={q} />
           </div>
           <span className="text-xs text-gray-400 shrink-0 mt-1">{editing ? '▲' : '▼'}</span>
