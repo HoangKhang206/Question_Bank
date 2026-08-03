@@ -44,10 +44,49 @@ function makeOptionCell(o: QuestionOption, isAnswer: boolean, widthPct: number):
   });
 }
 
-// Strip all HTML → plain text (dùng cho baseContent / fallback)
+// LaTeX → ký tự đọc được (dùng cho export text)
+function latexToReadable(s: string): string {
+  let r = s;
+  for (let i = 0; i < 5; i++) {
+    r = r.replace(/\\frac\{([^{}]*)\}\{([^{}]*)\}/g, '($1)/($2)');
+  }
+  r = r.replace(/\\sqrt\[([^\]]*)\]\{([^{}]*)\}/g, '∜($2)');
+  r = r.replace(/\\sqrt\{([^{}]*)\}/g, '√($1)');
+  r = r.replace(/\{([^{}]+)\}\^\{([^{}]+)\}/g, '$1^($2)');
+  r = r.replace(/\{([^{}]+)\}_\{([^{}]+)\}/g, '$1_($2)');
+  r = r.replace(/\^\{([^{}]+)\}/g, '^($1)');
+  r = r.replace(/_\{([^{}]+)\}/g, '_($1)');
+  r = r.replace(/\\overline\{([^{}]*)\}/g, '$1̅');
+  r = r.replace(/\\left\(/g, '(').replace(/\\right\)/g, ')');
+  r = r.replace(/\\left\[/g, '[').replace(/\\right\]/g, ']');
+  r = r
+    .replace(/\\times/g, '×').replace(/\\div/g, '÷')
+    .replace(/\\pm/g, '±').replace(/\\cdot/g, '·')
+    .replace(/\\rightarrow/g, '→').replace(/\\leftarrow/g, '←')
+    .replace(/\\rightleftharpoons/g, '⇌').replace(/\\leftrightarrow/g, '↔')
+    .replace(/\\infty/g, '∞')
+    .replace(/\\alpha/g, 'α').replace(/\\beta/g, 'β').replace(/\\gamma/g, 'γ')
+    .replace(/\\delta/g, 'δ').replace(/\\Delta/g, 'Δ').replace(/\\pi/g, 'π')
+    .replace(/\\mu/g, 'μ').replace(/\\lambda/g, 'λ').replace(/\\sigma/g, 'σ')
+    .replace(/\\Omega/g, 'Ω').replace(/\\omega/g, 'ω').replace(/\\theta/g, 'θ');
+  r = r.replace(/\\[a-zA-Z]+/g, '').replace(/[{}]/g, '');
+  return r.trim();
+}
+
+function unescHtml(s: string): string {
+  return s.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"');
+}
+
+// Strip all HTML → plain text (toán học được chuyển sang ký tự đọc được)
 function htmlToPlain(content: string): string {
   return content
     .replace(/<img[^>]*>/gi, '')
+    // math-display: $$...$$ → readable
+    .replace(/<span class="math-display">\$\$([\s\S]*?)\$\$<\/span>/gi,
+      (_, latex) => latexToReadable(unescHtml(latex)))
+    // math-inline: $...$ → readable
+    .replace(/<span class="math-inline">\$([\s\S]*?)\$<\/span>/gi,
+      (_, latex) => latexToReadable(unescHtml(latex)))
     .replace(/<br\s*\/?>/gi, '\n')
     .replace(/<\/(?:p|div|li|h[1-6])\b[^>]*>/gi, '\n')
     .replace(/<[^>]+>/g, '')
@@ -103,16 +142,31 @@ function htmlImgToRun(imgTag: string): ImageRun | null {
   return new ImageRun({ data: buf, transformation: dims, type });
 }
 
-// Convert HTML <table> string → docx Table (có border)
+// Cell content → Paragraph[] (giữ ảnh và toán học bên trong ô bảng)
+function htmlCellToChildren(cellHtml: string, bold = false): Paragraph[] {
+  const result: Paragraph[] = [];
+  const parts = cellHtml.split(/(<img[^>]*\/?>)/gi);
+  for (const part of parts) {
+    if (/<img/i.test(part)) {
+      const imgRun = htmlImgToRun(part);
+      if (imgRun) result.push(para([imgRun]));
+    } else {
+      const text = htmlToPlain(part).trim();
+      if (text) result.push(para([txt(text, bold ? { bold: true } : {})]));
+    }
+  }
+  return result.length > 0 ? result : [para([txt('')])];
+}
+
+// Convert HTML <table> string → docx Table (có border, giữ ảnh trong cell)
 function htmlTableToDocx(tableHtml: string): Table | null {
   const rows: TableRow[] = [];
   for (const rowMatch of tableHtml.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/gi)) {
     const cells: TableCell[] = [];
     for (const cellMatch of rowMatch[1].matchAll(/<(?:td|th)[^>]*>([\s\S]*?)<\/(?:td|th)>/gi)) {
-      const cellText = htmlToPlain(cellMatch[1]).trim();
       const isHeader = cellMatch[0].trimStart().startsWith('<th');
       cells.push(new TableCell({
-        children: [para([txt(cellText, isHeader ? { bold: true } : {})])],
+        children: htmlCellToChildren(cellMatch[1], isHeader),
       }));
     }
     if (cells.length > 0) rows.push(new TableRow({ children: cells }));
