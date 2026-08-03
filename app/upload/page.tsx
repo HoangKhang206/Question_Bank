@@ -254,16 +254,28 @@ function UploadInner() {
     fd.append('auto_type', String(autoType));
     fd.append('auto_answer', String(autoAnswer));
 
-    const res = await fetch('/api/upload', { method: 'POST', body: fd });
-    const j = await res.json() as { error?: string } & UploadResult;
-    setLoading(false);
-
-    if (res.status === 409 && j.error === 'FILE_EXISTS') {
-      if (confirm('File đã upload trước đó. Ghi đè?')) submitSingle(true);
-      return;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 90_000);
+    try {
+      const res = await fetch('/api/upload', { method: 'POST', body: fd, signal: controller.signal });
+      const j = await res.json() as { error?: string } & UploadResult;
+      setLoading(false);
+      if (res.status === 409 && j.error === 'FILE_EXISTS') {
+        if (confirm('File đã upload trước đó. Ghi đè?')) submitSingle(true);
+        return;
+      }
+      if (!res.ok) { setErr(j.error ?? 'Lỗi'); return; }
+      setResult(j);
+    } catch (e) {
+      setLoading(false);
+      if (e instanceof Error && e.name === 'AbortError') {
+        setErr('Upload mất quá nhiều thời gian. Hãy thử lại hoặc bật Chế độ file lớn.');
+      } else {
+        setErr(e instanceof Error ? e.message : 'Lỗi không xác định');
+      }
+    } finally {
+      clearTimeout(timer);
     }
-    if (!res.ok) { setErr(j.error ?? 'Lỗi'); return; }
-    setResult(j);
   }
 
   function submit(overwrite = false) {

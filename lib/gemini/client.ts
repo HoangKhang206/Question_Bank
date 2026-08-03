@@ -3,6 +3,8 @@
 
 import { GoogleGenerativeAI, type GenerativeModel } from '@google/generative-ai';
 
+const GEMINI_TIMEOUT_MS = 55_000; // 55s — dưới Vercel maxDuration=10s thì caller tự handle; local dev: tránh treo mãi
+
 let _genAI: GoogleGenerativeAI | null = null;
 let _flashModel: GenerativeModel | null = null;
 
@@ -16,13 +18,16 @@ function getClient(): GoogleGenerativeAI {
 
 export function getFlashModel(): GenerativeModel {
   if (!_flashModel) {
-    _flashModel = getClient().getGenerativeModel({
-      model: 'gemini-2.5-flash',
-      generationConfig: {
-        responseMimeType: 'application/json',
-        temperature: 0.1
-      }
-    });
+    _flashModel = getClient().getGenerativeModel(
+      {
+        model: 'gemini-2.5-flash',
+        generationConfig: {
+          responseMimeType: 'application/json',
+          temperature: 0.1,
+        },
+      },
+      { timeout: GEMINI_TIMEOUT_MS }
+    );
   }
   return _flashModel;
 }
