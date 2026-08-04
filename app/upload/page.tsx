@@ -297,11 +297,24 @@ function UploadInner() {
         setTimeout(() => { window.location.href = '/login'; }, 1200);
         return;
       }
+      // Vercel 504 / 502 trả HTML — đọc text và báo lỗi rõ ràng
+      if (!res.ok) {
+        const text = await res.text();
+        setLoading(false);
+        setSingleProgress(null);
+        const msg = res.status === 504
+          ? 'File xử lý quá lâu (timeout). Hãy bật Chế độ file lớn và thử lại.'
+          : `[${res.status}] ${text.slice(0, 200)}`;
+        setErr(msg);
+        if (res.status === 504) setChunkedMode(true);
+        return;
+      }
       if (!res.body) throw new Error('No response body');
 
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buf = '';
+      let receivedDone = false;
 
       outer: while (true) {
         const { done, value } = await reader.read();
@@ -330,6 +343,7 @@ function UploadInner() {
             break outer;
           }
           if (step === 'done') {
+            receivedDone = true;
             setResult(event.data as UploadResult);
             setLoading(false);
             setSingleProgress(null);
@@ -343,7 +357,12 @@ function UploadInner() {
         }
       }
 
+      // Stream kết thúc mà không nhận được event 'done'
       setLoading(false);
+      setSingleProgress(null);
+      if (!receivedDone) {
+        setErr('Kết nối bị ngắt giữa chừng. Vui lòng thử lại hoặc bật Chế độ file lớn.');
+      }
     } catch (e) {
       setLoading(false);
       setSingleProgress(null);
