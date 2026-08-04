@@ -19,7 +19,7 @@ import type { QuestionRange } from '@/lib/types';
 export const runtime = 'nodejs';
 export const maxDuration = 10;
 
-const CHUNK_SIZE = 40;
+const CHUNK_SIZE = 20;
 
 interface ChunkBody {
   source_file_id: string;

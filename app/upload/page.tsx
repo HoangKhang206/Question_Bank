@@ -26,8 +26,8 @@ interface ChunkedCtx {
   precomputed_answers: Record<string, string>;
 }
 
-const CHUNK_SIZE = 40;
-const LARGE_FILE_THRESHOLD = 2 * 1024 * 1024; // 2MB
+const CHUNK_SIZE = 20;
+const LARGE_FILE_THRESHOLD = 2 * 1024 * 1024; // 2MB (chỉ dùng cho PDF)
 
 async function safeJson<T>(res: Response): Promise<{ ok: boolean; status: number; data: T & { error?: string } }> {
   const text = await res.text();
@@ -90,7 +90,10 @@ function UploadInner() {
     setResult(null);
     setChunkProgress(null);
     setFailedChunk(null);
-    if (f.size >= LARGE_FILE_THRESHOLD) setChunkedMode(true);
+    // docx luôn dùng chunked (parse + AI single-mode timeout với >15 câu trên Vercel Hobby)
+    // pdf dùng chunked chỉ khi lớn (chunked init không hỗ trợ pdf)
+    if (f.name.endsWith('.docx')) setChunkedMode(true);
+    else if (f.size >= LARGE_FILE_THRESHOLD) setChunkedMode(true);
   }
 
   const onDrop = useCallback((e: React.DragEvent) => {
