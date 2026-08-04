@@ -12,7 +12,7 @@ import { computeFileHash, computeContentHash } from '@/lib/dedup/hash';
 import type { QuestionRange } from '@/lib/types';
 
 export const runtime = 'nodejs';
-export const maxDuration = 10;
+export const maxDuration = 60;
 
 export async function POST(req: Request) {
   try {

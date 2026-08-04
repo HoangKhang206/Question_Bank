@@ -2,6 +2,7 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "fluid": true,
   "functions": {
+    "app/api/upload/route.ts": { "maxDuration": 60 },
     "app/api/upload/chunk/route.ts": { "maxDuration": 60 },
     "app/api/upload/init/route.ts": { "maxDuration": 60 }
   }
