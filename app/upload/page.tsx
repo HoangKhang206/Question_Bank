@@ -90,10 +90,7 @@ function UploadInner() {
     setResult(null);
     setChunkProgress(null);
     setFailedChunk(null);
-    // docx luôn dùng chunked (parse + AI single-mode timeout với >15 câu trên Vercel Hobby)
-    // pdf dùng chunked chỉ khi lớn (chunked init không hỗ trợ pdf)
-    if (f.name.endsWith('.docx')) setChunkedMode(true);
-    else if (f.size >= LARGE_FILE_THRESHOLD) setChunkedMode(true);
+    if (f.size >= LARGE_FILE_THRESHOLD) setChunkedMode(true);
   }
 
   const onDrop = useCallback((e: React.DragEvent) => {
@@ -290,7 +287,14 @@ function UploadInner() {
         if (confirm('File đã upload trước đó. Ghi đè?')) submitSingle(true);
         return;
       }
-      if (!ok) { setErr(j.error ?? 'Lỗi'); return; }
+      if (!ok) {
+        const msg = status === 504
+          ? 'File xử lý quá lâu (timeout). Hãy bật Chế độ file lớn và thử lại.'
+          : (j.error ?? 'Lỗi');
+        setErr(msg);
+        if (status === 504) setChunkedMode(true);
+        return;
+      }
       setResult(j as UploadResult);
     } catch (e) {
       setLoading(false);
