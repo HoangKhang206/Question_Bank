@@ -26,8 +26,8 @@ interface ChunkedCtx {
   precomputed_answers: Record<string, string>;
 }
 
-const CHUNK_SIZE = 20;
-const LARGE_FILE_THRESHOLD = 2 * 1024 * 1024; // 2MB (chỉ dùng cho PDF)
+const CHUNK_SIZE = 40;
+const LARGE_FILE_THRESHOLD = 2 * 1024 * 1024; // 2MB
 
 async function safeJson<T>(res: Response): Promise<{ ok: boolean; status: number; data: T & { error?: string } }> {
   const text = await res.text();

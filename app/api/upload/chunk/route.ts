@@ -17,9 +17,9 @@ import { computeContentHash } from '@/lib/dedup/hash';
 import type { QuestionRange } from '@/lib/types';
 
 export const runtime = 'nodejs';
-export const maxDuration = 10;
+export const maxDuration = 60;
 
-const CHUNK_SIZE = 20;
+const CHUNK_SIZE = 40;
 
 interface ChunkBody {
   source_file_id: string;

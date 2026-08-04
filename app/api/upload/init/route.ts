@@ -12,7 +12,7 @@ import { computeFileHash } from '@/lib/dedup/hash';
 import type { QuestionRange } from '@/lib/types';
 
 export const runtime = 'nodejs';
-export const maxDuration = 10;
+export const maxDuration = 60;
 
 const QUESTION_MARKER = /^(?:Câu\s+)?(\d+)\s*[.):]/gm;
 
