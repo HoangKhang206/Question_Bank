@@ -4,7 +4,6 @@
 import { NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase/server';
 import { parseDocx } from '@/lib/parse/docx';
-import { parsePdf } from '@/lib/parse/pdf';
 import { segmentQuestions } from '@/lib/parse/segment';
 import { extractAnswersAuto } from '@/lib/parse/answer-detect';
 import { extractAnswersWithAI } from '@/lib/gemini/extract-answers';
@@ -89,6 +88,7 @@ export async function POST(req: Request) {
     if (file.name.endsWith('.docx')) {
       ({ html, text } = await parseDocx(buffer));
     } else if (file.name.endsWith('.pdf')) {
+      const { parsePdf } = await import('@/lib/parse/pdf');
       text = await parsePdf(buffer);
     } else {
       await sb

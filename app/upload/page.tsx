@@ -187,6 +187,12 @@ function UploadInner() {
     fd.append('auto_answer', String(autoAnswer));
 
     const initRes = await fetch('/api/upload/init', { method: 'POST', body: fd });
+    if (initRes.status === 401) {
+      setLoading(false);
+      setErr('Phiên đăng nhập hết hạn. Đang chuyển trang...');
+      setTimeout(() => { window.location.href = '/login'; }, 1200);
+      return;
+    }
     const initData = await initRes.json() as {
       error?: string;
       source_file_id?: string;
@@ -258,6 +264,12 @@ function UploadInner() {
     const timer = setTimeout(() => controller.abort(), 90_000);
     try {
       const res = await fetch('/api/upload', { method: 'POST', body: fd, signal: controller.signal });
+      if (res.status === 401) {
+        setLoading(false);
+        setErr('Phiên đăng nhập hết hạn. Đang chuyển trang...');
+        setTimeout(() => { window.location.href = '/login'; }, 1200);
+        return;
+      }
       const j = await res.json() as { error?: string } & UploadResult;
       setLoading(false);
       if (res.status === 409 && j.error === 'FILE_EXISTS') {

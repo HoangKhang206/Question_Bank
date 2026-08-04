@@ -30,6 +30,10 @@ export async function middleware(req: NextRequest) {
 }
 
 function redirectToLogin(req: NextRequest) {
+  // API routes get JSON 401 so fetch callers don't receive HTML
+  if (req.nextUrl.pathname.startsWith('/api/')) {
+    return NextResponse.json({ error: 'Chưa đăng nhập' }, { status: 401 });
+  }
   const url = req.nextUrl.clone();
   url.pathname = '/login';
   return NextResponse.redirect(url);
