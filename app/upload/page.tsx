@@ -29,6 +29,19 @@ interface ChunkedCtx {
 const CHUNK_SIZE = 40;
 const LARGE_FILE_THRESHOLD = 2 * 1024 * 1024; // 2MB
 
+async function safeJson<T>(res: Response): Promise<{ ok: boolean; status: number; data: T & { error?: string } }> {
+  const text = await res.text();
+  try {
+    return { ok: res.ok, status: res.status, data: JSON.parse(text) as T & { error?: string } };
+  } catch {
+    return {
+      ok: false,
+      status: res.status,
+      data: { error: `[${res.status}] Server trả về non-JSON: ${text.slice(0, 300)}` } as T & { error?: string },
+    };
+  }
+}
+
 function UploadInner() {
   const params = useSearchParams();
   const chapterId = params.get('chapter_id') ?? '';
@@ -128,15 +141,14 @@ function UploadInner() {
         }),
       });
 
-      if (!chunkRes.ok) {
-        const errData = await chunkRes.json().catch(() => ({})) as { error?: string };
-        setErr(`Chunk ${i + 1}/${total_chunks} thất bại: ${errData.error ?? 'Lỗi không xác định'}`);
+      const { ok: chunkOk, data: chunkData } = await safeJson<{ inserted: number; skipped_duplicate: number; unclassified: number }>(chunkRes);
+      if (!chunkOk) {
+        setErr(`Chunk ${i + 1}/${total_chunks} thất bại: ${chunkData.error ?? 'Lỗi không xác định'}`);
         setFailedChunk(i);
         setLoading(false);
         return;
       }
-
-      const d = await chunkRes.json() as { inserted: number; skipped_duplicate: number; unclassified: number };
+      const d = chunkData;
       accRef.current.inserted += d.inserted;
       accRef.current.skipped += d.skipped_duplicate;
       accRef.current.unclassified += d.unclassified;
@@ -193,19 +205,18 @@ function UploadInner() {
       setTimeout(() => { window.location.href = '/login'; }, 1200);
       return;
     }
-    const initData = await initRes.json() as {
-      error?: string;
-      source_file_id?: string;
-      total_questions_detected?: number;
-      precomputed_answers?: Record<string, string>;
-    };
+    const { ok: initOk, status: initStatus, data: initData } = await safeJson<{
+      source_file_id: string;
+      total_questions_detected: number;
+      precomputed_answers: Record<string, string>;
+    }>(initRes);
 
-    if (initRes.status === 409 && initData.error === 'FILE_EXISTS') {
+    if (initStatus === 409 && initData.error === 'FILE_EXISTS') {
       setLoading(false);
       if (confirm('File đã upload trước đó. Ghi đè?')) submitChunked(true);
       return;
     }
-    if (!initRes.ok) {
+    if (!initOk) {
       setLoading(false);
       setErr(initData.error ?? 'Lỗi khởi tạo');
       return;
@@ -270,14 +281,14 @@ function UploadInner() {
         setTimeout(() => { window.location.href = '/login'; }, 1200);
         return;
       }
-      const j = await res.json() as { error?: string } & UploadResult;
+      const { ok, status, data: j } = await safeJson<UploadResult>(res);
       setLoading(false);
-      if (res.status === 409 && j.error === 'FILE_EXISTS') {
+      if (status === 409 && j.error === 'FILE_EXISTS') {
         if (confirm('File đã upload trước đó. Ghi đè?')) submitSingle(true);
         return;
       }
-      if (!res.ok) { setErr(j.error ?? 'Lỗi'); return; }
-      setResult(j);
+      if (!ok) { setErr(j.error ?? 'Lỗi'); return; }
+      setResult(j as UploadResult);
     } catch (e) {
       setLoading(false);
       if (e instanceof Error && e.name === 'AbortError') {
