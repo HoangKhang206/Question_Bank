@@ -11,7 +11,7 @@ import { computeFileHash, computeContentHash } from '@/lib/dedup/hash';
 import type { QuestionRange } from '@/lib/types';
 
 export const runtime = 'nodejs';
-export const maxDuration = 60;
+export const maxDuration = 120;
 
 export async function POST(req: Request) {
   const encoder = new TextEncoder();
@@ -144,37 +144,37 @@ export async function POST(req: Request) {
           push({ step: 'classifying', classified: done, total });
         });
 
-        // SP4: Dedup + Insert
+        // SP4: Dedup + Insert (parallel)
         push({ step: 'saving' });
-        let inserted = 0;
-        let skippedDup = 0;
-        let unclassifiedCount = 0;
+        const unclassifiedCount = classified.filter(q => q.difficulty === 'unclassified').length;
 
-        for (const q of classified) {
-          const content_hash = computeContentHash(q.raw_content);
-          if (q.difficulty === 'unclassified') unclassifiedCount++;
+        const insertResults = await Promise.all(
+          classified.map(async (q) => {
+            const content_hash = computeContentHash(q.raw_content);
+            const { error } = await sb.from('questions').insert({
+              chapter_id: chapterId,
+              source_file_id: sourceRow.id,
+              question_number: q.number,
+              type: q.type,
+              difficulty: q.difficulty,
+              content: q.html_content ?? q.raw_content,
+              options: q.options ?? null,
+              answer: q.answer ?? null,
+              explanation: q.explanation ?? null,
+              content_hash,
+              tags: [],
+            });
+            if (error) {
+              if (error.code === '23505') return 'dup' as const;
+              console.error('[UPLOAD] insert failed:', error);
+              return 'err' as const;
+            }
+            return 'ok' as const;
+          })
+        );
 
-          const { error } = await sb.from('questions').insert({
-            chapter_id: chapterId,
-            source_file_id: sourceRow.id,
-            question_number: q.number,
-            type: q.type,
-            difficulty: q.difficulty,
-            content: q.html_content ?? q.raw_content,
-            options: q.options ?? null,
-            answer: q.answer ?? null,
-            explanation: q.explanation ?? null,
-            content_hash,
-            tags: [],
-          });
-
-          if (error) {
-            if (error.code === '23505') skippedDup++;
-            else console.error('[UPLOAD] insert failed:', error);
-          } else {
-            inserted++;
-          }
-        }
+        const inserted = insertResults.filter(r => r === 'ok').length;
+        const skippedDup = insertResults.filter(r => r === 'dup').length;
 
         await sb.from('source_files').update({ status: 'done' }).eq('id', sourceRow.id);
 

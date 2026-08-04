@@ -357,11 +357,30 @@ function UploadInner() {
         }
       }
 
+      // Flush phần còn lại trong buf (phòng khi thiếu \n cuối)
+      if (buf.trim() && !receivedDone) {
+        try {
+          const event = JSON.parse(buf.trim()) as Record<string, unknown>;
+          if (event.step === 'done') {
+            setResult(event.data as UploadResult);
+            setLoading(false);
+            setSingleProgress(null);
+            return;
+          }
+          if (event.step === 'error') {
+            setErr(event.error as string ?? 'Lỗi không xác định');
+            setLoading(false);
+            setSingleProgress(null);
+            return;
+          }
+        } catch { /* JSON chưa đầy đủ */ }
+      }
+
       // Stream kết thúc mà không nhận được event 'done'
       setLoading(false);
       setSingleProgress(null);
       if (!receivedDone) {
-        setErr('Kết nối bị ngắt giữa chừng. Vui lòng thử lại hoặc bật Chế độ file lớn.');
+        setErr('Upload quá lâu và bị ngắt kết nối. Hãy bật Chế độ file lớn và thử lại.');
       }
     } catch (e) {
       setLoading(false);
