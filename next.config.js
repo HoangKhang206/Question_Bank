@@ -2,6 +2,6 @@
 module.exports = {
   experimental: {
     serverActions: { bodySizeLimit: '50mb' },
+    serverComponentsExternalPackages: ['pdf-parse'],
   },
-  serverExternalPackages: ['pdf-parse', 'pdfjs-dist'],
 };
