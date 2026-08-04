@@ -21,13 +21,10 @@ export function getFlashModel(): GenerativeModel {
     _flashModel = getClient().getGenerativeModel(
       {
         model: 'gemini-2.5-flash',
-        // thinkingConfig chưa có trong type v0.24.1 → cast as any
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         generationConfig: {
           responseMimeType: 'application/json',
           temperature: 0.1,
-          thinkingConfig: { thinkingBudget: 2048 },
-        } as any,
+        },
       },
       { timeout: GEMINI_TIMEOUT_MS }
     );

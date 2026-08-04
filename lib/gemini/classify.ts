@@ -39,11 +39,11 @@ function buildPrompt(opts: ClassifyOptions): string {
 
   if (opts.autoType) {
     formatExample.type = 'multiple_choice';
-    fields.push(`- type: dạng câu hỏi
-  + "multiple_choice": có 4 lựa chọn A/B/C/D
-  + "true_false": dạng đúng/sai
-  + "short_answer": trả lời ngắn, điền khuyết
-  + "essay": tự luận, trình bày dài`);
+    fields.push(`- type: dạng câu hỏi — ưu tiên theo thứ tự sau:
+  + "multiple_choice": có đúng 4 lựa chọn A/B/C/D (hoặc A. B. C. D.)
+  + "true_false": có các ý nhỏ a) b) c) d) cần xét Đúng/Sai, HOẶC câu hỏi yêu cầu nhận xét một mệnh đề là đúng hay sai — DÙ không có a/b/c/d
+  + "short_answer": yêu cầu điền số, đơn vị, giá trị ngắn gọn (ví dụ: "10g", "3,14", "100V"); không có lựa chọn
+  + "essay": yêu cầu trình bày, chứng minh, giải thích nhiều bước, viết dài`);
   }
 
   if (opts.autoAnswer) {
