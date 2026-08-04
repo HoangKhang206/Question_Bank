@@ -316,7 +316,7 @@ function UploadInner() {
       let buf = '';
       let receivedDone = false;
 
-      outer: while (true) {
+      while (true) {
         const { done, value } = await reader.read();
         if (done) break;
         buf += decoder.decode(value, { stream: true });
@@ -340,7 +340,7 @@ function UploadInner() {
             setErr(event.error as string ?? 'Lỗi không xác định');
             setLoading(false);
             setSingleProgress(null);
-            break outer;
+            return;
           }
           if (step === 'done') {
             receivedDone = true;
