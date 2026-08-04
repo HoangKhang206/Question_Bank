@@ -26,6 +26,22 @@ interface ChunkedCtx {
   precomputed_answers: Record<string, string>;
 }
 
+interface SingleProgress {
+  step: string;
+  classified?: number;
+  total?: number;
+}
+
+function singleStepLabel(step: string): string {
+  switch (step) {
+    case 'parsing': return 'Đang phân tích file...';
+    case 'answers': return 'Tìm đáp án...';
+    case 'classifying': return 'Phân loại câu hỏi với AI...';
+    case 'saving': return 'Lưu dữ liệu...';
+    default: return 'Đang xử lý...';
+  }
+}
+
 const CHUNK_SIZE = 40;
 const LARGE_FILE_THRESHOLD = 2 * 1024 * 1024; // 2MB
 
@@ -59,6 +75,7 @@ function UploadInner() {
   const [err, setErr] = useState('');
   const [chunkProgress, setChunkProgress] = useState<ChunkProgress | null>(null);
   const [failedChunk, setFailedChunk] = useState<number | null>(null);
+  const [singleProgress, setSingleProgress] = useState<SingleProgress | null>(null);
 
   const inputRef = useRef<HTMLInputElement>(null);
   const cancelRef = useRef(false);
@@ -262,6 +279,7 @@ function UploadInner() {
     setLoading(true);
     setErr('');
     setResult(null);
+    setSingleProgress(null);
 
     const fd = new FormData();
     fd.append('file', file);
@@ -271,40 +289,65 @@ function UploadInner() {
     fd.append('auto_type', String(autoType));
     fd.append('auto_answer', String(autoAnswer));
 
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 90_000);
     try {
-      const res = await fetch('/api/upload', { method: 'POST', body: fd, signal: controller.signal });
+      const res = await fetch('/api/upload', { method: 'POST', body: fd });
       if (res.status === 401) {
         setLoading(false);
         setErr('Phiên đăng nhập hết hạn. Đang chuyển trang...');
         setTimeout(() => { window.location.href = '/login'; }, 1200);
         return;
       }
-      const { ok, status, data: j } = await safeJson<UploadResult>(res);
+      if (!res.body) throw new Error('No response body');
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = '';
+
+      outer: while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        const lines = buf.split('\n');
+        buf = lines.pop() ?? '';
+
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          let event: Record<string, unknown>;
+          try { event = JSON.parse(line); } catch { continue; }
+
+          const step = event.step as string;
+
+          if (step === 'file_exists') {
+            setLoading(false);
+            setSingleProgress(null);
+            if (confirm('File đã upload trước đó. Ghi đè?')) submitSingle(true);
+            return;
+          }
+          if (step === 'error') {
+            setErr(event.error as string ?? 'Lỗi không xác định');
+            setLoading(false);
+            setSingleProgress(null);
+            break outer;
+          }
+          if (step === 'done') {
+            setResult(event.data as UploadResult);
+            setLoading(false);
+            setSingleProgress(null);
+            return;
+          }
+          setSingleProgress({
+            step,
+            classified: event.classified as number | undefined,
+            total: event.total as number | undefined,
+          });
+        }
+      }
+
       setLoading(false);
-      if (status === 409 && j.error === 'FILE_EXISTS') {
-        if (confirm('File đã upload trước đó. Ghi đè?')) submitSingle(true);
-        return;
-      }
-      if (!ok) {
-        const msg = status === 504
-          ? 'File xử lý quá lâu (timeout). Hãy bật Chế độ file lớn và thử lại.'
-          : (j.error ?? 'Lỗi');
-        setErr(msg);
-        if (status === 504) setChunkedMode(true);
-        return;
-      }
-      setResult(j as UploadResult);
     } catch (e) {
       setLoading(false);
-      if (e instanceof Error && e.name === 'AbortError') {
-        setErr('Upload mất quá nhiều thời gian. Hãy thử lại hoặc bật Chế độ file lớn.');
-      } else {
-        setErr(e instanceof Error ? e.message : 'Lỗi không xác định');
-      }
-    } finally {
-      clearTimeout(timer);
+      setSingleProgress(null);
+      setErr(e instanceof Error ? e.message : 'Lỗi không xác định');
     }
   }
 
@@ -330,6 +373,15 @@ function UploadInner() {
 
   const pct = chunkProgress
     ? Math.round((chunkProgress.current / chunkProgress.total) * 100)
+    : 0;
+
+  const singlePct = singleProgress
+    ? singleProgress.step === 'parsing' ? 15
+    : singleProgress.step === 'answers' ? 28
+    : singleProgress.step === 'classifying'
+      ? 35 + Math.round(((singleProgress.classified ?? 0) / Math.max(singleProgress.total ?? 1, 1)) * 52)
+    : singleProgress.step === 'saving' ? 92
+    : 0
     : 0;
 
   return (
@@ -480,6 +532,27 @@ function UploadInner() {
         </div>
       )}
 
+      {/* Tiến trình single */}
+      {singleProgress && loading && !chunkedMode && (
+        <div className="mb-4 bg-blue-50 border border-blue-200 rounded-lg p-4">
+          <div className="flex justify-between items-center text-sm mb-2">
+            <span className="text-blue-800 font-medium">{singleStepLabel(singleProgress.step)}</span>
+            {singleProgress.step === 'classifying' && singleProgress.total != null && (
+              <span className="text-blue-600 text-xs">
+                {singleProgress.classified ?? 0}/{singleProgress.total} câu
+              </span>
+            )}
+          </div>
+          <div className="w-full bg-blue-100 rounded-full h-2">
+            <div
+              className="bg-blue-500 h-2 rounded-full transition-all duration-300"
+              style={{ width: `${singlePct}%` }}
+            />
+          </div>
+          <p className="text-xs text-blue-600 mt-2">Đừng đóng tab trong khi xử lý</p>
+        </div>
+      )}
+
       {/* Tiến trình chunked */}
       {chunkProgress && loading && (
         <div className="mb-4 bg-blue-50 border border-blue-200 rounded-lg p-4">
@@ -529,7 +602,9 @@ function UploadInner() {
         {loading
           ? chunkProgress
             ? `Chunk ${chunkProgress.current + 1}/${chunkProgress.total}...`
-            : 'Đang khởi tạo...'
+            : singleProgress
+            ? singleStepLabel(singleProgress.step)
+            : 'Đang tải lên...'
           : chunkedMode
           ? 'Upload & Xử lý theo batch'
           : 'Upload & Phân loại'}

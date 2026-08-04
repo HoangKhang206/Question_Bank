@@ -82,7 +82,8 @@ function validateSchema(data: unknown, opts: ClassifyOptions): asserts data is G
 
 async function classifyBatch(
   batch: RawQuestion[],
-  opts: ClassifyOptions
+  opts: ClassifyOptions,
+  attempt = 0
 ): Promise<ClassifiedQuestion[]> {
   const prompt = buildPrompt(opts);
   const questionsText = batch.map((q) => `Câu ${q.number}: ${q.raw_content}`).join('\n\n');
@@ -108,23 +109,39 @@ async function classifyBatch(
     console.error('[SP3] Batch failed:', {
       error: err instanceof Error ? err.message : String(err),
       response: rawResponse.slice(0, 300),
-      numbers: batch.map((q) => q.number)
+      numbers: batch.map((q) => q.number),
+      attempt,
     });
+    // Retry 1 lần sau 1s trước khi fallback unclassified
+    if (attempt === 0) {
+      console.warn('[SP3] Retrying batch...');
+      await new Promise((r) => setTimeout(r, 1000));
+      return classifyBatch(batch, opts, 1);
+    }
     return batch.map((q) => ({ ...q, difficulty: 'unclassified' as const }));
   }
 }
 
 export async function classifyAll(
   questions: RawQuestion[],
-  opts: ClassifyOptions = {}
+  opts: ClassifyOptions = {},
+  onProgress?: (done: number, total: number) => void
 ): Promise<ClassifiedQuestion[]> {
   const batches: RawQuestion[][] = [];
   for (let i = 0; i < questions.length; i += BATCH_SIZE) {
     batches.push(questions.slice(i, i + BATCH_SIZE));
   }
 
+  let completed = 0;
   const results = await Promise.all(
-    batches.map((b) => limit(() => classifyBatch(b, opts)))
+    batches.map((b) =>
+      limit(async () => {
+        const result = await classifyBatch(b, opts);
+        completed += b.length;
+        onProgress?.(Math.min(completed, questions.length), questions.length);
+        return result;
+      })
+    )
   );
 
   return results.flat();
