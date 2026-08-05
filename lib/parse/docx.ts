@@ -9,6 +9,23 @@ import mammoth from 'mammoth';
 import JSZip from 'jszip';
 import { extractOmmlBlocks, replaceMathPlaceholders } from './omml';
 
+const SUPERSCRIPT_MAP: Record<string, string> = {
+  '0': '⁰', '1': '¹', '2': '²', '3': '³', '4': '⁴',
+  '5': '⁵', '6': '⁶', '7': '⁷', '8': '⁸', '9': '⁹',
+  '+': '⁺', '-': '⁻', 'n': 'ⁿ', 'i': 'ⁱ',
+};
+const SUBSCRIPT_MAP: Record<string, string> = {
+  '0': '₀', '1': '₁', '2': '₂', '3': '₃', '4': '₄',
+  '5': '₅', '6': '₆', '7': '₇', '8': '₈', '9': '₉',
+  '+': '₊', '-': '₋',
+};
+function mapScripts(content: string, map: Record<string, string>): string {
+  return [...content].map((c) => map[c] ?? c).join('');
+}
+
+// WMF images không hiển thị được trên browser — dùng SVG placeholder thay thế
+const WMF_PLACEHOLDER = `data:image/svg+xml;charset=utf-8,<svg xmlns='http://www.w3.org/2000/svg' width='80' height='24'><rect width='80' height='24' fill='%23f3f4f6' rx='4' stroke='%23d1d5db' stroke-width='1'/><text x='40' y='16' font-size='11' text-anchor='middle' font-family='sans-serif' fill='%236b7280'>[Hình vẽ]</text></svg>`;
+
 async function preprocessOmml(buffer: Buffer): Promise<{ buffer: Buffer; mathEntries: ReturnType<typeof extractOmmlBlocks>['mathEntries'] }> {
   let zip: JSZip;
   try {
@@ -39,6 +56,9 @@ export async function parseDocx(buffer: Buffer): Promise<{ html: string; text: s
     { buffer: processedBuffer },
     {
       convertImage: mammoth.images.imgElement(async (image) => {
+        if (image.contentType === 'image/x-wmf' || image.contentType === 'image/wmf') {
+          return { src: WMF_PLACEHOLDER };
+        }
         const imgBuffer = await image.read();
         const base64 = imgBuffer.toString('base64');
         return { src: `data:${image.contentType};base64,${base64}` };
@@ -65,8 +85,10 @@ export async function parseDocx(buffer: Buffer): Promise<{ html: string; text: s
  */
 export function htmlToText(html: string): string {
   return html
-    .replace(/<img[^>]*>/gi, '')
+    .replace(/<img[^>]*>/gi, '[Hình vẽ]')
     .replace(/<span class="math-(?:inline|display)">[^<]*<\/span>/gi, ' [MATH] ')
+    .replace(/<sup>([^<]*)<\/sup>/gi, (_, c) => mapScripts(c, SUPERSCRIPT_MAP))
+    .replace(/<sub>([^<]*)<\/sub>/gi, (_, c) => mapScripts(c, SUBSCRIPT_MAP))
     .replace(/<br\s*\/?>/gi, '\n')
     .replace(/<\/(?:p|div|li|tr)>/gi, '\n')
     .replace(/<[^>]+>/g, '')

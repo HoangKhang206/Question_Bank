@@ -91,6 +91,12 @@ export async function POST(req: Request) {
           .single();
         if (srcErr) throw new Error(`Insert source_files: ${srcErr.message}`);
 
+        // Overwrite: xoá câu hỏi cũ của file này trước khi insert lại
+        if (overwrite && existing) {
+          const { error: delErr } = await sb.from('questions').delete().eq('source_file_id', sourceRow.id);
+          if (delErr) console.error('[UPLOAD] delete questions failed:', delErr);
+        }
+
         // SP1: Parse
         push({ step: 'parsing' });
         let text: string;
