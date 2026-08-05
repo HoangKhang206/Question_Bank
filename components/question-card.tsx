@@ -57,6 +57,18 @@ function parseTrueFalseAnswer(answer: string | null): Record<string, string> {
 
 // ─── Sub-renderers ────────────────────────────────────────────────────────────
 
+function OptionText({ text }: { text: string }) {
+  if (text.includes('<')) {
+    return (
+      <span
+        className="[&_.katex]:text-sm [&_img]:inline [&_img]:max-h-10 [&_img]:w-auto [&_img]:align-middle"
+        dangerouslySetInnerHTML={{ __html: applyKatex(text) }}
+      />
+    );
+  }
+  return <span>{text}</span>;
+}
+
 function MultipleChoiceBody({ options, answer }: { options: QuestionOption[]; answer: string | null }) {
   return (
     <ul className="space-y-1 mt-2">
@@ -74,7 +86,7 @@ function MultipleChoiceBody({ options, answer }: { options: QuestionOption[]; an
             }`}>
               {o.key}
             </span>
-            <span>{o.text}</span>
+            <OptionText text={o.text} />
           </li>
         );
       })}
@@ -93,7 +105,7 @@ function TrueFalseBody({ options, answer }: { options: QuestionOption[]; answer:
         return (
           <li key={o.key} className="flex items-start gap-2 text-sm">
             <span className="shrink-0 text-gray-400 w-4">{o.key})</span>
-            <span className="flex-1 text-gray-700">{o.text}</span>
+            <span className="flex-1 text-gray-700"><OptionText text={o.text} /></span>
             {hasBadge && (
               <span className={`shrink-0 text-xs font-semibold px-2 py-0.5 rounded-full ${
                 isDung ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'

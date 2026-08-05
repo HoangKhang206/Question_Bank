@@ -276,7 +276,7 @@ function extractExplanationMap(
   return map;
 }
 
-// ─── HTML slice map (cho ảnh inline) ─────────────────────────────────────────
+// ─── HTML slice map (cho ảnh inline và phân số trong đáp án) ─────────────────
 
 function blockToText(block: string): string {
   return block
@@ -291,16 +291,43 @@ function blockToText(block: string): string {
     .trim();
 }
 
-/**
- * Tách HTML thành Map<localQuestionNumber, stemHtml>.
- * stemHtml = phần câu hỏi trước options A/B/C/D, bao gồm ảnh + bảng.
- * Chỉ trả về entry cho câu nào thực sự có <img> hoặc <table>.
- * Strip "Câu N." ở đầu để tránh hiện 2 lần khi UI thêm prefix.
- */
-export function buildHtmlSliceMap(html: string): Map<number, string> {
-  if (!html.includes('<img') && !html.includes('<table')) return new Map();
+// Trích inner HTML của 1 block option (bỏ tag <p> bao ngoài và nhãn "A. ")
+function extractOptionInner(blocks: string[], label: string): string {
+  return blocks
+    .map((block, i) => {
+      const inner = block
+        .replace(/^<p(?:[^>]*)?>/i, '')
+        .replace(/<\/p>$/i, '')
+        .trim();
+      if (i === 0) {
+        // Xoá nhãn "A. " / "a) " ở đầu block đầu tiên
+        return inner.replace(new RegExp(`^${label}\\s*[.):]\\s*`, 'i'), '').trim();
+      }
+      return inner;
+    })
+    .join(' ')
+    .trim();
+}
 
-  const map = new Map<number, string>();
+function hasRichContent(html: string): boolean {
+  return html.includes('math-inline') || html.includes('math-display') || html.includes('<img');
+}
+
+export interface HtmlEntry {
+  stem?: string;                      // HTML thân câu hỏi (nếu có ảnh/bảng)
+  optHtml?: Record<string, string>;   // HTML nội dung từng đáp án (nếu có math/ảnh)
+}
+
+/**
+ * Tách HTML thành Map<localQuestionNumber, HtmlEntry>.
+ * stem = HTML trước options (bao gồm ảnh, bảng, phương trình).
+ * optHtml = HTML bên trong từng đáp án A/B/C/D (nếu có phân số, ảnh).
+ * Chỉ lưu entry khi có nội dung phong phú (math span, img, table).
+ */
+export function buildHtmlSliceMap(html: string): Map<number, HtmlEntry> {
+  if (!hasRichContent(html) && !html.includes('<table')) return new Map();
+
+  const map = new Map<number, HtmlEntry>();
   const blockRe = /<p(?:\s[^>]*)?>[\s\S]*?<\/p>|<img(?:\s[^>]*)?\/?>|<table[\s\S]*?<\/table>|<(?:ul|ol)[\s\S]*?<\/(?:ul|ol)>/gi;
 
   const blocks: string[] = [];
@@ -330,28 +357,80 @@ export function buildHtmlSliceMap(html: string): Map<number, string> {
     }
   }
 
-  // Mỗi câu: lấy stem (dừng trước A./B./C./D. options và lời giải)
   for (const [num, questionBlocks] of groups) {
     const stemBlocks: string[] = [];
+    const optAccum: Record<string, string[]> = {};
+    let currentOptKey: string | null = null;
+
     for (const block of questionBlocks) {
       const text = blockToText(block);
-      if (/^[ABCDabcd][.)]\s/.test(text)) break;
       if (/^(?:Lời giải|Hướng dẫn|Giải)\b/iu.test(text)) break;
-      stemBlocks.push(block);
+
+      const optMatch = text.match(/^([ABCDabcd])[.)]\s/);
+      if (optMatch) {
+        currentOptKey = optMatch[1];
+        if (!optAccum[currentOptKey]) optAccum[currentOptKey] = [];
+        optAccum[currentOptKey].push(block);
+      } else if (currentOptKey) {
+        optAccum[currentOptKey].push(block);
+      } else {
+        stemBlocks.push(block);
+      }
     }
 
-    const stemHtml = stemBlocks.join('');
-    if (!stemHtml.includes('<img') && !stemHtml.includes('<table')) continue;
+    const entry: HtmlEntry = {};
 
-    // Strip "Câu N." / "N." ở đầu paragraph đầu tiên
-    const cleaned = stemHtml.replace(
-      /(<p(?:[^>]*)?>)\s*(?:Câu\s+)?\d+\s*[.):]\s*/u,
-      '$1'
-    );
-    map.set(num, cleaned);
+    // Stem: chỉ lưu nếu có ảnh hoặc bảng
+    const stemHtml = stemBlocks.join('');
+    if (stemHtml.includes('<img') || stemHtml.includes('<table')) {
+      entry.stem = stemHtml.replace(
+        /(<p(?:[^>]*)?>)\s*(?:Câu\s+)?\d+\s*[.):]\s*/u,
+        '$1'
+      );
+    }
+
+    // Options: chỉ lưu nếu có math span hoặc ảnh
+    for (const [key, optBlocks] of Object.entries(optAccum)) {
+      const raw = optBlocks.join('');
+      if (hasRichContent(raw)) {
+        if (!entry.optHtml) entry.optHtml = {};
+        entry.optHtml[key] = extractOptionInner(optBlocks, key);
+      }
+    }
+
+    if (entry.stem || entry.optHtml) {
+      map.set(num, entry);
+    }
   }
 
   return map;
+}
+
+// ─── Apply HtmlEntry → questions ─────────────────────────────────────────────
+
+/**
+ * Gán stem HTML và optHtml (phân số/ảnh trong đáp án) vào danh sách câu hỏi.
+ * numberOffset: cộng thêm để chuyển local → global (dùng cho PHẦN mode).
+ */
+function applyHtmlEntries(
+  questions: RawQuestion[],
+  htmlMap: Map<number, HtmlEntry>,
+  baseOffset: number,
+  endOffset?: number
+): void {
+  for (const q of questions) {
+    if (baseOffset > 0 && (q.number <= baseOffset || (endOffset !== undefined && q.number > endOffset))) continue;
+    const localNum = q.number - baseOffset;
+    const entry = htmlMap.get(localNum);
+    if (!entry) continue;
+    if (entry.stem) q.html_content = entry.stem;
+    if (entry.optHtml && q.options) {
+      q.options = q.options.map((opt) => {
+        const html = entry.optHtml![opt.key] ?? entry.optHtml![opt.key.toUpperCase()];
+        return html ? { ...opt, text: html } : opt;
+      });
+    }
+  }
 }
 
 // ─── Main entry ───────────────────────────────────────────────────────────────
@@ -377,14 +456,11 @@ export function segmentQuestions(
       throw new Error('[SP2] Không tìm thấy marker câu hỏi nào trong file');
     }
 
-    // Gán html_content = stem HTML (bảng + ảnh giữ nguyên vị trí)
+    // Gán html_content (stem) và optHtml (phân số/ảnh trong đáp án)
     if (htmlSource) {
       const htmlMap = buildHtmlSliceMap(htmlSource);
       if (htmlMap.size > 0) {
-        for (const q of questions) {
-          const stemHtml = htmlMap.get(q.number);
-          if (stemHtml) q.html_content = stemHtml;
-        }
+        applyHtmlEntries(questions, htmlMap, 0);
         console.log(`[SP2] html_content (ảnh/bảng) gán cho ${questions.filter((q) => q.html_content).length} câu`);
       }
     }
@@ -430,11 +506,9 @@ export function segmentQuestions(
           if (htmlMap.size === 0) continue;
           const baseOffset = phanOffsets[i];
           const endOffset = i + 1 < phanOffsets.length ? phanOffsets[i + 1] : questions.length;
-          for (const q of questions) {
-            if (q.number <= baseOffset || q.number > endOffset) continue;
-            const stemHtml = htmlMap.get(q.number - baseOffset);
-            if (stemHtml) { q.html_content = stemHtml; htmlAssigned++; }
-          }
+          const before = questions.filter((q) => q.html_content).length;
+          applyHtmlEntries(questions, htmlMap, baseOffset, endOffset);
+          htmlAssigned += questions.filter((q) => q.html_content).length - before;
         }
         if (htmlAssigned > 0) {
           console.log(`[SP2] PHẦN mode: html_content (ảnh/bảng) gán cho ${htmlAssigned} câu`);
