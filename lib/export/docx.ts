@@ -131,8 +131,8 @@ function plainToRuns(
   opts: ConstructorParameters<typeof TextRun>[0] = {}
 ): TextRun[] {
   if (!text) return [];
-  // HTML content → extract math spans
-  if (text.includes('math-inline') || text.includes('math-display')) {
+  // HTML content (math spans, img, hoặc bất kỳ tag HTML nào) → strip → extract math
+  if (/<[a-zA-Z]/.test(text)) {
     const processed = extractMathSpans(text, mathEntries);
     return textToRuns(htmlToPlain(processed), opts);
   }
@@ -194,6 +194,8 @@ function htmlImgToRun(imgTag: string): ImageRun | null {
   const dataM = srcM[1].match(/^data:([^;]+);base64,(.+)$/);
   if (!dataM) return null;
   const mime = dataM[1].toLowerCase();
+  // SVG không nhúng được vào docx (WMF placeholder) — bỏ qua
+  if (mime.includes('svg')) return null;
   const buf = Buffer.from(dataM[2], 'base64');
   const dims = fitToPage(...Object.values(getImageDimensions(buf, mime)) as [number, number]);
   const type = (mime.includes('jpeg') || mime.includes('jpg')) ? 'jpg' : mime.includes('gif') ? 'gif' : 'png';
