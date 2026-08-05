@@ -300,8 +300,12 @@ function extractOptionInner(blocks: string[], label: string): string {
         .replace(/<\/p>$/i, '')
         .trim();
       if (i === 0) {
-        // Xoá nhãn "A. " / "a) " ở đầu block đầu tiên
-        return inner.replace(new RegExp(`^${label}\\s*[.):]\\s*`, 'i'), '').trim();
+        // Xoá nhãn "A. " / "a) " kể cả khi bị bọc trong thẻ HTML
+        // Ví dụ: "<strong>c)</strong> text" → "text"
+        const labelRe = new RegExp(
+          `^(?:<(?!/)[^>]*>)*${label}\\s*[.):](?:</[^>]+>)*\\s*`, 'i'
+        );
+        return inner.replace(labelRe, '').trim();
       }
       return inner;
     })
