@@ -366,6 +366,25 @@ export function buildHtmlSliceMap(html: string): Map<number, HtmlEntry> {
       const text = blockToText(block);
       if (/^(?:Lời giải|Hướng dẫn|Giải)\b/iu.test(text)) break;
 
+      // Bảng chứa nhiều đáp án (layout 4 cột phổ biến trong đề thi VN)
+      // → tách từng ô thay vì gán cả bảng vào 1 đáp án
+      if (/<table/i.test(block)) {
+        const cells: Array<{ key: string; html: string }> = [];
+        for (const cm of block.matchAll(/<(?:td|th)[^>]*>([\s\S]*?)<\/(?:td|th)>/gi)) {
+          const ct = blockToText(cm[1]).trim();
+          const om = ct.match(/^([ABCDabcd])[.)]\s/);
+          if (om) cells.push({ key: om[1], html: cm[1] });
+        }
+        if (cells.length > 1) {
+          for (const { key, html } of cells) {
+            if (!optAccum[key]) optAccum[key] = [];
+            optAccum[key].push(html);
+            currentOptKey = key;
+          }
+          continue;
+        }
+      }
+
       const optMatch = text.match(/^([ABCDabcd])[.)]\s/);
       if (optMatch) {
         currentOptKey = optMatch[1];
@@ -389,12 +408,11 @@ export function buildHtmlSliceMap(html: string): Map<number, HtmlEntry> {
       );
     }
 
-    // Options: chỉ lưu khi có math span (phân số OMML → KaTeX).
-    // Ảnh WMF/SVG placeholder → giữ nguyên plain text "[Hình vẽ]" từ htmlToText.
-    // Không lưu khi block là table chứa nhiều đáp án (tránh gán cả bảng vào 1 option).
+    // Options: lưu nếu có math span hoặc ảnh (PNG).
+    // SVG placeholder (WMF) cũng được lưu nhưng hiển thị ô "[Hình vẽ]".
     for (const [key, optBlocks] of Object.entries(optAccum)) {
       const raw = optBlocks.join('');
-      if (raw.includes('math-inline') || raw.includes('math-display')) {
+      if (hasRichContent(raw)) {
         if (!entry.optHtml) entry.optHtml = {};
         entry.optHtml[key] = extractOptionInner(optBlocks, key);
       }
