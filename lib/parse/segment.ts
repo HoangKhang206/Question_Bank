@@ -412,6 +412,35 @@ export function segmentQuestions(
 
     const foundAnswers = questions.filter((q) => q.answer).length;
     console.log(`[SP2] PHẦN mode: ${questions.length} câu từ ${phanSections.length} phần, ${foundAnswers} đáp án`);
+
+    // Gán html_content (ảnh/bảng) trong PHẦN mode
+    // Tách HTML theo PHẦN → build map cục bộ → map local→global qua phanOffsets
+    if (htmlSource) {
+      const htmlPhanMs = Array.from(
+        htmlSource.matchAll(new RegExp(PHAN_PATTERN.source, 'g'))
+      );
+      if (htmlPhanMs.length >= phanSections.length) {
+        let htmlAssigned = 0;
+        for (let i = 0; i < phanSections.length; i++) {
+          const hStart = htmlPhanMs[i].index!;
+          const hEnd = i + 1 < htmlPhanMs.length
+            ? htmlPhanMs[i + 1].index!
+            : htmlSource.length;
+          const htmlMap = buildHtmlSliceMap(htmlSource.slice(hStart, hEnd));
+          if (htmlMap.size === 0) continue;
+          const baseOffset = phanOffsets[i];
+          const endOffset = i + 1 < phanOffsets.length ? phanOffsets[i + 1] : questions.length;
+          for (const q of questions) {
+            if (q.number <= baseOffset || q.number > endOffset) continue;
+            const stemHtml = htmlMap.get(q.number - baseOffset);
+            if (stemHtml) { q.html_content = stemHtml; htmlAssigned++; }
+          }
+        }
+        if (htmlAssigned > 0) {
+          console.log(`[SP2] PHẦN mode: html_content (ảnh/bảng) gán cho ${htmlAssigned} câu`);
+        }
+      }
+    }
   }
 
   // Gán lời giải từ phần sau boundary
