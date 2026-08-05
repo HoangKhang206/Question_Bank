@@ -23,8 +23,15 @@ function mapScripts(content: string, map: Record<string, string>): string {
   return [...content].map((c) => map[c] ?? c).join('');
 }
 
-// WMF images không hiển thị được trên browser — dùng SVG placeholder thay thế
-const WMF_PLACEHOLDER = `data:image/svg+xml;charset=utf-8,<svg xmlns='http://www.w3.org/2000/svg' width='80' height='24'><rect width='80' height='24' fill='%23f3f4f6' rx='4' stroke='%23d1d5db' stroke-width='1'/><text x='40' y='16' font-size='11' text-anchor='middle' font-family='sans-serif' fill='%236b7280'>[Hình vẽ]</text></svg>`;
+// WMF images không hiển thị được trên browser — dùng SVG placeholder base64.
+// QUAN TRỌNG: phải dùng base64 (không dùng raw SVG trong src) để tránh ký tự
+// <, > trong data URL phá vỡ cấu trúc HTML và khiến regex <img[^>]*> bị lỗi.
+const WMF_PLACEHOLDER = 'data:image/svg+xml;base64,' + Buffer.from(
+  '<svg xmlns="http://www.w3.org/2000/svg" width="80" height="24">' +
+  '<rect width="80" height="24" fill="#f3f4f6" rx="4" stroke="#d1d5db" stroke-width="1"/>' +
+  '<text x="40" y="16" font-size="11" text-anchor="middle" font-family="sans-serif" fill="#6b7280">[Hình vẽ]</text>' +
+  '</svg>'
+).toString('base64');
 
 async function preprocessOmml(buffer: Buffer): Promise<{ buffer: Buffer; mathEntries: ReturnType<typeof extractOmmlBlocks>['mathEntries'] }> {
   let zip: JSZip;

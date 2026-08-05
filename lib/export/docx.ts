@@ -31,7 +31,11 @@ const NO_BORDERS = {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function optionLayout(opts: QuestionOption[]): 1 | 2 | 4 {
-  const maxLen = Math.max(...opts.map((o) => `${o.key}. ${o.text}`.length));
+  // Dùng độ dài text thực (không phải HTML) để tránh layout sai khi o.text là HTML
+  const maxLen = Math.max(...opts.map((o) => {
+    const display = /<[a-zA-Z]/.test(o.text) ? htmlToPlain(o.text) : o.text;
+    return `${o.key}. ${display}`.length;
+  }));
   if (maxLen <= 25) return 1;
   if (maxLen <= 55) return 2;
   return 4;
@@ -86,7 +90,7 @@ function latexToReadable(s: string): string {
 // Strip all HTML → plain text (fallback path; math → readable text)
 function htmlToPlain(content: string): string {
   return content
-    .replace(/<img[^>]*>/gi, '')
+    .replace(/<img[^>]*>/gi, '[Hình vẽ]')
     .replace(/<span class="math-display">\$\$([\s\S]*?)\$\$<\/span>/gi,
       (_, l) => latexToReadable(unescHtml(l)))
     .replace(/<span class="math-inline">\$([\s\S]*?)\$<\/span>/gi,
