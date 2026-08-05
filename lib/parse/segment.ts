@@ -389,10 +389,12 @@ export function buildHtmlSliceMap(html: string): Map<number, HtmlEntry> {
       );
     }
 
-    // Options: chỉ lưu nếu có math span hoặc ảnh
+    // Options: chỉ lưu khi có math span (phân số OMML → KaTeX).
+    // Ảnh WMF/SVG placeholder → giữ nguyên plain text "[Hình vẽ]" từ htmlToText.
+    // Không lưu khi block là table chứa nhiều đáp án (tránh gán cả bảng vào 1 option).
     for (const [key, optBlocks] of Object.entries(optAccum)) {
       const raw = optBlocks.join('');
-      if (hasRichContent(raw)) {
+      if (raw.includes('math-inline') || raw.includes('math-display')) {
         if (!entry.optHtml) entry.optHtml = {};
         entry.optHtml[key] = extractOptionInner(optBlocks, key);
       }
