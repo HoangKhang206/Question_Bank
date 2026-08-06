@@ -407,8 +407,9 @@ export function buildHtmlSliceMap(html: string): Map<number, HtmlEntry> {
     // Stem: chỉ lưu nếu có ảnh hoặc bảng
     const stemHtml = stemBlocks.join('');
     if (stemHtml.includes('<img') || stemHtml.includes('<table')) {
+      // Xoá "Câu N." kể cả khi bọc trong <strong>, <u>... (vd: <strong>Câu 5.</strong>)
       entry.stem = stemHtml.replace(
-        /(<p(?:[^>]*)?>)\s*(?:Câu\s+)?\d+\s*[.):]\s*/u,
+        /(<p(?:[^>]*)?>)(?:<[^>]+>)*\s*(?:Câu\s+)?\d+\s*[.):]\s*(?:<\/[^>]+>)*\s*/u,
         '$1'
       );
     }
