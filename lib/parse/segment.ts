@@ -314,7 +314,11 @@ function extractOptionInner(blocks: string[], label: string): string {
 }
 
 function hasRichContent(html: string): boolean {
-  return html.includes('math-inline') || html.includes('math-display') || html.includes('<img');
+  if (html.includes('math-inline') || html.includes('math-display')) return true;
+  // SVG placeholder (WMF) không phải rich content cần lưu vào optHtml:
+  // — hiển thị như "[Hình vẽ]" dù sao, và việc lưu gây lỗi khi block chứa nhiều đáp án
+  // Chỉ lưu khi có ảnh thật (PNG, JPEG...) không phải SVG
+  return html.includes('<img') && /<img[^>]+src="data:image\/(?!svg)[^"]+"/i.test(html);
 }
 
 export interface HtmlEntry {
