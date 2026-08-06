@@ -6,7 +6,7 @@
 
 import {
   Document, Packer, Paragraph, TextRun, AlignmentType, UnderlineType,
-  Table, TableRow, TableCell, WidthType, BorderStyle, ImageRun,
+  Table, TableRow, TableCell, WidthType, BorderStyle, ImageRun, VerticalMergeType,
 } from 'docx';
 import type { Question, ExamMeta, QuestionType, QuestionOption } from '@/lib/types';
 import { injectOmmlIntoDocx, type ExportMathEntry } from './omml';
@@ -233,15 +233,74 @@ function htmlCellToChildren(
 }
 
 function htmlTableToDocx(tableHtml: string, mathEntries: ExportMathEntry[]): Table | null {
-  const rows: TableRow[] = [];
-  for (const rowMatch of tableHtml.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/gi)) {
-    const cells: TableCell[] = [];
-    for (const cellMatch of rowMatch[1].matchAll(/<(?:td|th)[^>]*>([\s\S]*?)<\/(?:td|th)>/gi)) {
-      const isHeader = cellMatch[0].trimStart().startsWith('<th');
-      cells.push(new TableCell({ children: htmlCellToChildren(cellMatch[1], isHeader, mathEntries) }));
+  type ParsedCell = { html: string; isHeader: boolean; colSpan: number; rowSpan: number };
+  const rawRows: ParsedCell[][] = [];
+
+  for (const rowM of tableHtml.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/gi)) {
+    const row: ParsedCell[] = [];
+    for (const cellM of rowM[1].matchAll(/<(td|th)([^>]*)>([\s\S]*?)<\/\1>/gi)) {
+      const attrs = cellM[2];
+      const csM = attrs.match(/colspan="(\d+)"/i);
+      const rsM = attrs.match(/rowspan="(\d+)"/i);
+      row.push({
+        html: cellM[3],
+        isHeader: cellM[1].toLowerCase() === 'th',
+        colSpan: csM ? Math.max(1, parseInt(csM[1], 10)) : 1,
+        rowSpan: rsM ? Math.max(1, parseInt(rsM[1], 10)) : 1,
+      });
     }
-    if (cells.length > 0) rows.push(new TableRow({ children: cells }));
+    if (row.length > 0) rawRows.push(row);
   }
+
+  if (rawRows.length === 0) return null;
+
+  type GridCell =
+    | { kind: 'real'; html: string; isHeader: boolean; colSpan: number; rowSpan: number }
+    | { kind: 'cont'; colSpan: number }
+    | { kind: 'skip' };
+
+  const grid: (GridCell | undefined)[][] = Array.from({ length: rawRows.length }, () => []);
+
+  for (let r = 0; r < rawRows.length; r++) {
+    let col = 0;
+    for (const cell of rawRows[r]) {
+      while (grid[r][col] !== undefined) col++;
+      grid[r][col] = { kind: 'real', ...cell };
+      for (let dc = 1; dc < cell.colSpan; dc++) grid[r][col + dc] = { kind: 'skip' };
+      for (let dr = 1; dr < cell.rowSpan && r + dr < rawRows.length; dr++) {
+        grid[r + dr][col] = { kind: 'cont', colSpan: cell.colSpan };
+        for (let dc = 1; dc < cell.colSpan; dc++) grid[r + dr][col + dc] = { kind: 'skip' };
+      }
+      col += cell.colSpan;
+    }
+  }
+
+  const rows: TableRow[] = [];
+  for (let r = 0; r < rawRows.length; r++) {
+    const rowCells: TableCell[] = [];
+    const rowGrid = grid[r];
+    let maxCol = 0;
+    for (let c = 0; c < rowGrid.length; c++) { if (rowGrid[c]) maxCol = c; }
+    for (let c = 0; c <= maxCol; c++) {
+      const cell = rowGrid[c];
+      if (!cell || cell.kind === 'skip') continue;
+      if (cell.kind === 'cont') {
+        rowCells.push(new TableCell({
+          children: [para([txt('')])],
+          ...(cell.colSpan > 1 ? { columnSpan: cell.colSpan } : {}),
+          verticalMerge: VerticalMergeType.CONTINUE,
+        }));
+      } else {
+        rowCells.push(new TableCell({
+          children: htmlCellToChildren(cell.html, cell.isHeader, mathEntries),
+          ...(cell.colSpan > 1 ? { columnSpan: cell.colSpan } : {}),
+          ...(cell.rowSpan > 1 ? { verticalMerge: VerticalMergeType.RESTART } : {}),
+        }));
+      }
+    }
+    if (rowCells.length > 0) rows.push(new TableRow({ children: rowCells }));
+  }
+
   if (rows.length === 0) return null;
   return new Table({ width: { size: 100, type: WidthType.PERCENTAGE }, rows });
 }

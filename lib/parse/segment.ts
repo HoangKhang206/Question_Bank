@@ -301,9 +301,9 @@ function extractOptionInner(blocks: string[], label: string): string {
         .trim();
       if (i === 0) {
         // Xoá nhãn "A. " / "a) " kể cả khi bị bọc trong thẻ HTML
-        // Ví dụ: "<strong>c)</strong> text" → "text"
+        // Ví dụ: "<strong>c)</strong>" hoặc "<strong>\tb)</strong>" → bỏ nhãn
         const labelRe = new RegExp(
-          `^(?:<(?!/)[^>]*>)*${label}\\s*[.):](?:</[^>]+>)*\\s*`, 'i'
+          `^(?:<(?!/)[^>]*>)*\\s*${label}(?:</[^>]+>)*\\s*[.):](?:</[^>]+>)*\\s*`, 'i'
         );
         return inner.replace(labelRe, '').trim();
       }
@@ -376,7 +376,8 @@ export function buildHtmlSliceMap(html: string): Map<number, HtmlEntry> {
         const cells: Array<{ key: string; html: string }> = [];
         for (const cm of block.matchAll(/<(?:td|th)[^>]*>([\s\S]*?)<\/(?:td|th)>/gi)) {
           const ct = blockToText(cm[1]).trim();
-          const om = ct.match(/^([ABCDabcd])[.)]\s/);
+          // \s* thay vì \s để xử lý ô chỉ có ảnh: "A.<img/>" → blockToText → "A." (không có space)
+          const om = ct.match(/^([ABCDabcd])[.)]\s*/);
           if (om) cells.push({ key: om[1], html: cm[1] });
         }
         if (cells.length > 1) {
