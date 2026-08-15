@@ -11,6 +11,7 @@ export async function middleware(req: NextRequest) {
   if (
     pathname.startsWith('/login') ||
     pathname.startsWith('/api/auth/login') ||
+    pathname.startsWith('/api/test-mathjax') ||
     pathname.startsWith('/_next') ||
     pathname === '/favicon.ico' ||
     /\.(?:png|jpe?g|gif|svg|ico|webp|woff2?)$/i.test(pathname)
