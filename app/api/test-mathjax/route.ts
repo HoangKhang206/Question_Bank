@@ -1,24 +1,20 @@
 // TEST ONLY — xóa sau khi verify Vercel serverless tương thích mathjax-node-svg2png
-// Không dùng trong production
 
 import { NextResponse } from 'next/server';
-import mjAPI from 'mathjax-node-svg2png';
 
 export const runtime = 'nodejs';
 export const maxDuration = 30;
-
-let initialized = false;
-function ensureInit() {
-  if (initialized) return;
-  mjAPI.config({ MathJax: {} });
-  mjAPI.start();
-  initialized = true;
-}
+// Bắt buộc: ngăn Next.js thử static-generate route này lúc build (gây timeout)
+export const dynamic = 'force-dynamic';
 
 export async function GET() {
   try {
     const t0 = Date.now();
-    ensureInit();
+
+    // Dynamic import để tránh init MathJax lúc build
+    const mjAPI = (await import('mathjax-node-svg2png')).default;
+    mjAPI.config({ MathJax: {} });
+    mjAPI.start();
 
     const result = await mjAPI.typeset({
       math: 'K_c = \\frac{[CO_2][H_2]}{[CO][H_2O]}',
@@ -35,7 +31,6 @@ export async function GET() {
       ok: true,
       elapsed_ms: elapsed,
       png_bytes: bytes,
-      png_preview: `data:image/png;base64,${pngBase64}`,
     });
   } catch (err) {
     return NextResponse.json(
